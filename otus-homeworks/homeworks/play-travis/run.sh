@@ -1,8 +1,7 @@
 #!/bin/bash
 GROUP=NOGROUP
 BRANCH=${TRAVIS_PULL_REQUEST_BRANCH:-$TRAVIS_BRANCH}
-#HOMEWORK_RUN=./otus-homeworks/homeworks/$BRANCH/run.sh
-HOMEWORK_RUN=./test.py
+HOMEWORK_RUN=./otus-homeworks/homeworks/$BRANCH/run.sh
 #REPO=https://github.com/express42/otus-homeworks.git
 REPO=https://github.com/Windemiatrix/DevOps-learning.git
 DOCKER_IMAGE=express42/otus-homeworks:0.7
