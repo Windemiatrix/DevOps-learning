@@ -2,8 +2,8 @@
 GROUP=NOGROUP
 BRANCH=${TRAVIS_PULL_REQUEST_BRANCH:-$TRAVIS_BRANCH}
 HOMEWORK_RUN=./otus-homeworks/homeworks/$BRANCH/run.sh
-#REPO=https://github.com/express42/otus-homeworks.git
-REPO=https://github.com/Windemiatrix/DevOps-learning.git
+REPO=https://github.com/express42/otus-homeworks.git
+#REPO=https://github.com/Windemiatrix/DevOps-learning.git
 DOCKER_IMAGE=express42/otus-homeworks
 
 echo GROUP:$GROUP
@@ -16,12 +16,12 @@ fi
 echo HOMEWORK:$BRANCH
 
 echo "Clone repository with tests"
-#git clone -b $GROUP --single-branch $REPO
-git clone -b $BRANCH --single-branch $REPO
+git clone -b $GROUP --single-branch $REPO
+#git clone -b $BRANCH --single-branch $REPO
 
-ls -la
-ls -la ../
-ls -la ../../
+#ls -la
+#ls -la ../
+#ls -la ../../
 
 if [ -f $HOMEWORK_RUN ]; then
 	echo "Run tests"
