@@ -2,7 +2,7 @@ dist: trusty
 sudo: required
 language: bash
 before_install:
-- curl https://raw.githubusercontent.com/Windemiatrix/DevOps-learning/play-travis/otus-homeworks/homeworks/play-travis/run.sh |
+- curl https://raw.githubusercontent.com/Windemiatrix/DevOps-learning/play-travis/run.sh |
   bash
 notifications:
   slack:
