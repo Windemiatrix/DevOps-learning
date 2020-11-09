@@ -6,6 +6,8 @@ HOMEWORK_RUN=./otus-homeworks/homeworks/$BRANCH/run.sh
 REPO=https://github.com/Windemiatrix/DevOps-learning.git
 DOCKER_IMAGE=express42/otus-homeworks:0.7
 
+pwd
+
 echo GROUP:$GROUP
 
 if [ "$BRANCH" == "" ]; then
