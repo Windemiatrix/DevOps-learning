@@ -19,6 +19,10 @@ echo "Clone repository with tests"
 #git clone -b $GROUP --single-branch $REPO
 git clone -b $BRANCH --single-branch $REPO
 
+ls -la
+ls -la ../
+ls -la ../../
+
 if [ -f $HOMEWORK_RUN ]; then
 	echo "Run tests"
 	# Prepare network & run container
@@ -28,9 +32,6 @@ if [ -f $HOMEWORK_RUN ]; then
 		--device /dev/net/tun --name hw-test --network hw-test-net $DOCKER_IMAGE
 	# Show versions & run tests
 	docker exec hw-test bash -c 'echo -=Get versions=-; ansible --version; ansible-lint --version; packer version; terraform version; tflint --version; docker version; docker-compose --version'
-	
-	ls -la
-
 	docker exec -e USER=appuser -e BRANCH=$BRANCH hw-test $HOMEWORK_RUN
 
 	# ssh -i id_rsa_test -p 33433 root@localhost "cd /srv && BRANCH=$BRANCH $HOMEWORK_RUN"
