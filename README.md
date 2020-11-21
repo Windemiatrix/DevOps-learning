@@ -102,7 +102,8 @@ $ sudo pritunl default-password
 
 # Данные для тестирования
 
-bastion_IP = 35.210.88.217\
+bastion_IP = 35.210.88.217
+
 someinternalhost_IP = 10.132.0.2
 
 
