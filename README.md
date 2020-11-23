@@ -242,8 +242,10 @@ gcloud compute
   --target-tags=tcp-9292
 ```
 
-Данные для тестирования
+Данные для тестирования №2
 
-testapp_IP=34.77.102.100
+```
+testapp_IP = 34.77.102.100
+testapp_port = 9292
+```
 
-testapp_port=9292
