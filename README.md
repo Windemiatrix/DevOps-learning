@@ -244,6 +244,6 @@ gcloud compute
 
 Данные для тестирования
 
-testapp_IP = 34.77.102.100
+testapp_IP=34.77.102.100
 
-testapp_port = 9292
+testapp_port=9292
