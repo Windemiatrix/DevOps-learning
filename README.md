@@ -83,7 +83,7 @@ $ cp config-scripts/install_ruby.sh packer/scripts
 
 ```
 $ packer validate ubuntu16.json
-$ packer build ubuntu16.json
+$ packer build -var-file=variables.json ubuntu16.json
 ```
 
 Образ успешно создан.
