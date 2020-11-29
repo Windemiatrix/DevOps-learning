@@ -1,0 +1,9 @@
+{
+    "project_id": "infra-296308",
+    "source_image_family": "ubuntu-1604-lts",
+    "disk_size": "10",
+    "machine_type": "f1-micro",
+    "disk_type": "pd-standard",
+    "network": "SomeNetwork",
+    "tags": "tcp-9292"
+}

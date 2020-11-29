@@ -1,0 +1,5 @@
+project          = "infra-296308"
+public_key_path  = "~/.ssh/rmartsev_rsa.pub"
+private_key_path = "~/.ssh/rmartsev_rsa"
+disk_image       = "reddit-base-1606657180"
+

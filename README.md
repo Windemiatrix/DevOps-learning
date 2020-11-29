@@ -1,109 +1,554 @@
-# Google Cloud Platform
+# Вступление
 
-## VM Instances
+Домашнее задание по сборке образов VM при помощи Packer и Terraform
 
-bastion - виртуальная машина с доступом в интернет\
-Internal IP: 10.132.0.2\
-External IP: 35.210.88.217
+# Настройка авторизации Packer и Terraform в GCP
 
-someinternalhost - виртуальная машина без доступа в интернет\
-Internal IP: 10.132.0.3
-
-# SSH
-
-## Полезные команды SSH
-
-`ssh-add -L` - список RSA ключей, добавленных в агент авторизации\
-`ssh-add ~/.ssh/appuser` - добавить ключ RSA в агент авторизации\
-`ssh -i ~/.ssh/appuser appuser@146.148.80.202` - подключиться по SSH к хосту с IP 146.148.80.202 с использованием ключа RSA\
-`ssh -i ~/.ssh/appuser -A appuser@146.148.80.202` - подключиться по SSH к хосту с IP 146.148.80.202 с использованием ключа RSA и использованием SSH Agent Forwarding\
-
-## Подключение по SSH через промежуточный хост
-
-Для подключения через SSH шлюз с IP адресом 35.210.88.217 на SSH сервер с IP 10.132.0.3, на SSH сервере необходимо выполнить команду
+Создадим ADC:
 
 ```
-ssh -J rmartsev@35.210.88.217 rmartsev@10.132.0.3
+$ gcloud auth application-default login
 ```
 
-Таким образом можно подключаться через любое количество SSH шлюзов к SSH серверу, указывая их через запятую
+# Создание шаблона Packer
+
+Для шаблона создадим директорию `packer` и создадим пустой файл `ubuntu16.json`, который будет шаблоном для VM.
 
 ```
-ssh -J user@host1,user@host2 user@host3
+$ mkdir packer
+$ touch ./packer/ubuntu16.json
 ```
 
-Для подключения к серверу командой `ssh someinternalhost` добавим в файл `~/.ssh/config` строчки:
+Заполним файл информацией о создании виртуальной машины для билда и создании машинного образа (блок `builders`):
 
 ```
-Host someinternalhost
-    Hostname 10.132.0.3
-    ProxyJump rmartsev@35.210.88.217
-    User rmartsev
+{
+    "builders": [
+        {
+            "type": "googlecompute",
+            "project_id": "infra-296308",
+            "image_name": "reddit-base-{{timestamp}}",
+            "image_family": "reddit-base",
+            "source_image_family": "ubuntu-1604-lts",
+            "zone": "europe-west1-b",
+            "ssh_username": "rmartsev",
+            "machine_type": "f1_micro"
+        }
+    ]
+}
 ```
 
-# Создание VPN сервера
+где:\
+`type` - что будет создавать виртуальную машину для билда образа,\
+`project_id` - идентификационный номер проекта,\
+`image_family` - семейство образов, к которому будет принадлежать новый образ,\
+`image_name` - имя создаваемого образа,\
+`source_image_family` - что взать за базовый образ билда,\
+`zone` - зона, в которой запускаь VM для билда образа,\
+`ssh_username` - временный пользователь, который будет создан для подключения к VM во время билда и выполнения команд провижинера,\
+`machine_type` - тим инстанса, который запускается для билда.
 
-Создаем файл `setupvpn.sh` в домашней папке со следующим содержимым:
+Добавим в файл `./packer/ubuntu16.json` информацию об устанавливаемом ПО и производимых настройках системы и конфигурации приложений на созданной VM (блок `provisioners`):
 
 ```
-cat <<EOF> setupvpn.sh
+...
+    "provisioners": [
+        {
+            "type": "shell",
+            "script": "scripts/install_ruby.sh",
+            "execute_command": "sudo {{.Path}}"
+        },
+        {
+            "type": "shell",
+            "script": "scripts/install_mongodb.sh",
+            "execute_command": "sudo {{.Path}}"
+        }
+    ]
+...
+```
+
+где\
+`type` - \
+`script` - скрипт, запускаемый провижинером,\
+`execute_command` - способ запуска скрипта.
+
+Создадим директорию для скриптов, которые будут использованы провижинером, и скопируем туда ранее созданные `install_ruby.sh` и `install_mongodb.sh`.
+
+```
+$ cp config-scripts/install_mongodb.sh packer/scripts
+$ cp config-scripts/install_ruby.sh packer/scripts
+```
+
+Проверим на наличие ошибок подготовленную конфигурацию, исправим их при наличии и запустим создание образа
+
+```
+$ packer validate ubuntu16.json
+$ packer build -var-file=variables.json ubuntu16.json
+```
+
+Образ успешно создан.
+
+# Деплой тестового приложения с помощью инстанса
+
+Создадим VM через веб-интерфейс GCP, в качестве образа системы указав созданный образ.
+
+# Установка зависимостей и запуск приложения
+
+```
+$ git clone -b monolith https://github.com/express42/reddit.git
+$ cd reddit/
+$ bundle install
+$ puma -d
+```
+
+Проверяем, запуск сервера
+
+```
+$ ps aux | grep puma
+rmartsev  2687  2.1  1.3 515400 26720 ?        Sl   19:43   0:00 puma 3.10.0 (tcp://0.0.0.0:9292) [reddit]
+rmartsev  2701  0.0  0.0  12944  1004 pts/0    S+   19:43   0:00 grep --color=auto puma
+```
+
+Добавим установку и запуск `puma` в образ. Для этого подготовим файл `immutable.json`:
+
+```
+{
+    "builders": [
+        {
+            "type": "googlecompute",
+            "project_id": "{{user `project_id`}}",
+            "image_name": "reddit-full-{{timestamp}}",
+            "image_family": "reddit-full",
+            "source_image_family": "{{user `source_image_family`}}",
+            "zone": "europe-west1-b",
+            "ssh_username": "rmartsev",
+            "machine_type": "{{user `machine_type`}}",
+            "disk_size": "{{user `disk_size`}}",
+            "disk_type": "{{user `disk_type`}}",
+            "tags": "{{user `tags`}}"
+        }
+    ],
+    "provisioners": [
+        {
+            "type": "shell",
+            "script": "scripts/install_ruby.sh",
+            "execute_command": "sudo {{.Path}}"
+        },
+        {
+            "type": "shell",
+            "script": "scripts/install_mongodb.sh",
+            "execute_command": "sudo {{.Path}}"
+        },
+        {
+            "type": "shell",
+            "script": "scripts/deploy.sh",
+            "execute_command": "sudo {{.Path}}"
+        },
+        {
+            "type": "file",
+            "source": "files/reddit.service",
+            "destination": "/tmp/reddit.service"
+        },
+        {
+            "type": "shell",
+            "inline": [
+                "sudo mv /tmp/reddit.service /etc/systemd/system/",
+                "sudo systemctl daemon-reload",
+		        "sudo systemctl start reddit.service",
+		        "sudo systemctl enable reddit.service"
+            ]
+        }
+    ]
+}
+```
+
+Также добавим директорию `files` для файлов, загружаемых в собираемый образ. В директории подготовим файл `reddit.service`, необходимый для запуска сервиса
+
+```
+[Unit]
+Description=Puma HTTP Server (Reddit)
+After=network.target
+
+
+[Service]
+Type=simple
+
+User=appuser
+Group=appuser
+
+WorkingDirectory=/home/appuser/reddit
+
+ExecStart=/usr/local/bin/puma
+
+TimeoutSec=15
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Команда для сборки образа:
+
+```
+packer build -var-file=variables.json immutable.json
+```
+
+# Terraform
+
+Создаем директорию `terraform` для создания в ней конфигурации.
+
+Файл `main.tf` содержит основные настройка Terraform.
+
+Секция `Provider` позволяет Terraform управлять ресурсами GCP через API вызовы.
+
+```
+terraform {
+    # Версия terraform
+    required_version = "0.13.5"
+}
+provider "google" {
+    # Версия провайдера
+    version = "2.15"
+
+    #ID проекта
+    project = "devops-course-1"
+
+    region = "europe-west-1"
+}
+```
+
+Провайдеры `Terraform` являются загружаемыми модулями начиная с версии 0.10. Для того, чтобы загрузить провайдер и начать его использовать, необходимо выполнить команду инициализации в директории `terraform`:
+
+```
+$ terraform init
+
+Initializing the backend...
+
+Initializing provider plugins...
+- Finding hashicorp/google versions matching "2.15.*"...
+- Installing hashicorp/google v2.15.0...
+- Installed hashicorp/google v2.15.0 (signed by HashiCorp)
+
+Terraform has been successfully initialized!
+
+You may now begin working with Terraform. Try running "terraform plan" to see
+any changes that are required for your infrastructure. All Terraform commands
+should now work.
+
+If you ever set or change modules or backend configuration for Terraform,
+rerun this command to reinitialize your working directory. If you forget, other
+commands will detect it and remind you to do so if necessary.
+```
+
+Для создания инстанса добавим в файл `main.tf` секцию `resource`
+
+```
+resource "google_compute_instance" "app" {
+    name = "reddit-map"
+    machine_type = "g1-small"
+    zone = "europe-west1-d"
+    boot_disk {
+        initialize_params {
+            image = "reddit-full-1606586549"
+        }
+    }
+    network_interface {
+        network = "default"
+        access_config {}
+    }
+}
+```
+
+Для выполнения планирования изменений запустим команду `terraform plan` в директории `terraform`.
+
+Для запуска инстанса , описание характеристик которого было описано в конфигурационном файле `main.cf` команду:
+
+```
+$ terraform apply
+
+An execution plan has been generated and is shown below.
+Resource actions are indicated with the following symbols:
+  + create
+
+Terraform will perform the following actions:
+
+  # google_compute_instance.app will be created
+  + resource "google_compute_instance" "app" {
+      + can_ip_forward       = false
+      + cpu_platform         = (known after apply)
+      + deletion_protection  = false
+      + guest_accelerator    = (known after apply)
+      + id                   = (known after apply)
+      + instance_id          = (known after apply)
+      + label_fingerprint    = (known after apply)
+      + machine_type         = "g1-small"
+      + metadata_fingerprint = (known after apply)
+      + name                 = "reddit-map"
+      + project              = (known after apply)
+      + self_link            = (known after apply)
+      + tags_fingerprint     = (known after apply)
+      + zone                 = "europe-west1-d"
+
+      + boot_disk {
+          + auto_delete                = true
+          + device_name                = (known after apply)
+          + disk_encryption_key_sha256 = (known after apply)
+          + kms_key_self_link          = (known after apply)
+          + mode                       = "READ_WRITE"
+          + source                     = (known after apply)
+
+          + initialize_params {
+              + image  = "reddit-full-1606586549"
+              + labels = (known after apply)
+              + size   = (known after apply)
+              + type   = (known after apply)
+            }
+        }
+
+      + network_interface {
+          + address            = (known after apply)
+          + name               = (known after apply)
+          + network            = "default"
+          + network_ip         = (known after apply)
+          + subnetwork         = (known after apply)
+          + subnetwork_project = (known after apply)
+
+          + access_config {
+              + assigned_nat_ip = (known after apply)
+              + nat_ip          = (known after apply)
+              + network_tier    = (known after apply)
+            }
+        }
+
+      + scheduling {
+          + automatic_restart   = (known after apply)
+          + on_host_maintenance = (known after apply)
+          + preemptible         = (known after apply)
+
+          + node_affinities {
+              + key      = (known after apply)
+              + operator = (known after apply)
+              + values   = (known after apply)
+            }
+        }
+    }
+
+Plan: 1 to add, 0 to change, 0 to destroy.
+
+Do you want to perform these actions?
+  Terraform will perform the actions described above.
+  Only 'yes' will be accepted to approve.
+
+  Enter a value: yes
+
+google_compute_instance.app: Creating...
+google_compute_instance.app: Still creating... [10s elapsed]
+google_compute_instance.app: Still creating... [20s elapsed]
+google_compute_instance.app: Creation complete after 29s [id=reddit-map]
+
+Apply complete! Resources: 1 added, 0 changed, 0 destroyed.
+```
+
+Для отображения внешнего IP адреса созданного инстанса, выполним команду:
+
+```
+$ terraform show | grep nat_ip
+            nat_ip       = "35.195.208.148"
+```
+
+Добавим ключ SSH для доступа к серверу. Для этого внесем изменения в файл `main.tf`
+
+```
+...
+    metadata = {
+        # Путь до публичного ключа
+        ssh-keys = "rmartsev:${file("~/.ssh/rmartsev_rsa.pub")}"
+    }
+...
+```
+
+Применим добавленные изменения командой `terraform apply`. Уже созданный инстанс при этом не будет удален и создан заново.
+
+Для облегчения получения информации об инстансах вынесем интересующую информацию в выходные переменные.
+
+Чтобы не мешать выходные переменные с основной конфигурацией наших ревурсов, создадим их в отдельном файле, который назовем `output.tf`. Добавим в него переменную, содержащую внешний IP адрес инстанса:
+
+```
+output "app_external-ip" {
+    value="${google_compute_instance.app.network_interface[0].access_config[0].nat_ip}"
+}
+```
+
+Для присвоения значения переменной выполним команду `terraform refresh`. Значения выводных переменных можно посмотреть командой `terraform output`.
+
+Создадим правило сетевого экрана, для этого добавим ресурс в файл main.tf:
+
+```
+resource "google_compute_firewall" "firewall_puma" {
+    name = "allow-puma-default"
+    # Название сети, в которой действует правило
+    network = "default"
+    # Какой доступ разрешить
+    allow {
+        protocol = "tcp"
+        ports = ["9292"]
+    }
+    # Каким адресам разрешаем доступ
+    source_ranges = ["0.0.0.0/0"]
+    # Правило применимо для инстансов с перечисленными тэгами
+    target_tags = ["reddit-app"]
+}
+```
+
+Планируем и применяем изменения
+
+```
+$ terraform plan
+$ terraform apply
+```
+
+Правило сетевого экрана применимо к инстансам с тэгом `reddit-app`. Чтобы применить данное правило к созданному инстансу, присвоим ему необходимую метку. Для этого внесем изменения в файл `main.tf`:
+
+```
+...
+resource "google_compute_instance" "app" {
+...
+    tags = ["reddit-app"]
+...
+}
+...
+```
+
+Выполняем `terraform plan` и `terraform apply`.
+
+Добавим провижинер, позволяющий копировать содержимое файла на удаленную машину
+
+```
+provisioner "file" {
+    source = "files/puma.service"
+    destination = "/tmp/puma.service"
+}
+```
+
+Данный провижинер копирует файл `files/puma.service` в директорию `/tmp/`.
+
+Сщдержимое файла `files/puma.service`:
+
+```
+[Unit]
+Description=Puma HTTP Server
+After=network.target
+
+[Service]
+Type=simple
+User=rmartsev
+WorkingDirectory=/home/rmartsev/reddit
+ExecStart=/usr/bin/ruby -lv '/usr/local/bin/puma'
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Добавим еще провижинер для удаленного запуска скрипта `files/deploy.sh`
+
+```
+provisioner "remote-exec" {
+    script = "files/deploy.sh"
+}
+```
+
+Содержимое файла `files/deploy.sh`:
+
+```
 #!/bin/bash
-echo "deb http://repo.mongodb.org/apt/ubuntu xenial/mongodb-org/3.4 multiverse" > /etc/apt/sources.list.d/mongodb-org-3.4.list
-echo "deb http://repo.pritunl.com/stable/apt xenial main" > /etc/apt/sources.list.d/pritunl.list
-apt-key adv --keyserver hkp://keyserver.ubuntu.com --recv 0C49F3730359A14518585931BC711F9BA15703C6
-apt-key adv --keyserver hkp://keyserver.ubuntu.com --recv 7568D9BB55FF9E5287D586017AE645C0CF8E292A
-apt-get --assume-yes update
-apt-get --assume-yes upgrade
-apt-get --assume-yes install pritunl mongodb-org
-systemctl start pritunl mongod
-systemctl enable pritunl mongod
-EOF
+set -e
+
+APP_DIR=${1:-$HOME}
+
+git clone -b monolith https://github.com/express42/reddit.git $APP_DIR/reddit
+cd $APP_DIR/reddit
+bundle install
+
+sudo mv /tmp/puma.service /etc/systemd/system/puma.service
+sudo systemctl start puma
+sudo systemctl enable puma
 ```
 
-Запускаем скрипт
+Определим параметры подключения провиженеров к VM. Внутрь ресурса VM, перед определением провижинеров, добавbv следующую секцию
 
 ```
-$ sudo bash setupvpn.sh
+connection {
+  type = "ssh"
+  # host = self.network_interface[0].access_config[0].nat_ip
+  user = "appuser"
+  agent = false
+  # путь до приватного ключа
+  private_key = file("~/.ssh/appuser")
+}
 ```
 
-Выполняем команду для генерации кода установки pritunl
+По умолчанию провижинеры запускаются сразу после создания ресурса, поэтому чтобы проверить их работу, ресурс необхоидмо пересоздать. Для этого используем команду отметки ресурса для пересоздания, и применим изменения.
 
 ```
-$ sudo pritunl setup-key
+$ terraform taint google_compute_instance.app
+$ terraform plan
+$ terraform apply
 ```
 
-Открываем в браузере ссылку `https://35.210.88.217/setup`, подставляем код установки и нажимаем `Save`
+Проверим работоспособность ресурса, перейдя по адресу в браузере: http://<external-ip>:9292
 
-Набираем в консоли команду для генерации пары логина и пароля для доступа к веб-интерфейсу
+Для параметризации конфигурационного файла есть возможность использовать входные переменные. Для этого созданим конфигурационный файл `variables.tf`:
 
 ```
-$ sudo pritunl default-password
+variable project {
+  description = "Project ID"
+}
+variable region {
+  description = "Region"
+  # Значение по умолчанию
+  default = "europe-west1"
+}
+variable public_key_path {
+  # Описание переменной
+  description = "Path to the public key used for ssh access"
+}
+variable disk_image {
+  description = "Disk image"
+}
 ```
 
-Авторизуемся в веб-интерфейсе с отображенными учетными данными. На вкладке `Users` добавляем организацию и пользователя внутри этой организации с логином `test` и пин-кодом `6214157507237678334670591556762`
+Внесем изменения в файл `main.tf`, заменив значения переменными:
 
-На вкладке `Servers` добавляем сервер и привязываем к созданной организации.
+```
+...
+provider "google" {
+    version = "2.15.0"
+    project = var.project
+    region = var.region
+}
+...
+...
+boot_disk {
+    initialize_params {
+        image = var.disk_image
+    }
+}
+...
+metadata = {
+    ssh-keys = "rmartsev:${file(var.public_key_path)}"
+}
+...
+```
 
-Нажимаем `Start server`. Сервер поднят на порту UDP 11884.
+Теперь определим переменные в файле `terraform.tfvars`:
 
-## Настройка сетевого экрана
+```
+project = "infra-296308"
+public_key_path = "~/.ssh/rmartsev_rsa.pub"
+disk_image = "reddit-base-1606657180"
+```
 
-В Google Cloud Platform переходим в `VPC Network` -> `Firewall` и выбираем `Create Firewall rule`. Создаем разрешающее правило для пакетов UDP с номером порта 11884 для тега `udp-11884`. Присваиваем тег виртуальной машине `bastion`.
-
-## Настройка VPN клиента
-
-Через веб-интерфейс pritunl скачиваем конфигурационный файл пользователя `test` и добавляем его в клиент OpenVPN на локальной станции. Также указываем логин и пароль данного пользователя, заданные в веб-интерфейсе ранее.
-
-## Настройка SSL сертификата для веб-интерфейса
-
-Воспользуемся сервисом `xip.io`, с помощью которого будем использовать DNS имя для подключения к серверу `bastion` `35.210.88.217.xip.io`.
-
-Сервис `pritunl` поддерживает функционал автоматического генерирования SSL сертификатов, для этого достаточно добавить в настройках доменное имя `35.210.88.217.xip.io`.
-
-# Данные для тестирования
-
-bastion_IP = 35.210.88.217
-
-someinternalhost_IP = 10.132.0.2
+Уничтожим созданные инстансы командой `terraform destroy`, затем создадим их заново командами `terraform plan` и `terraform apply`.
 
 
