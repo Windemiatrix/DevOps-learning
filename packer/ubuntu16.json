@@ -11,7 +11,6 @@
             "machine_type": "{{user `machine_type`}}",
             "disk_size": "{{user `disk_size`}}",
             "disk_type": "{{user `disk_type`}}",
-            "network": "{{user `network`}}",
             "tags": "{{user `tags`}}"
         }
     ],

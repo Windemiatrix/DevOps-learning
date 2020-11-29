@@ -1,0 +1,14 @@
+[Unit]
+Description=Puma HTTP Server
+After=network.target
+
+[Service]
+Type=simple
+User=rmartsev
+WorkingDirectory=/home/rmartsev/reddit
+ExecStart=/usr/bin/ruby -lv '/usr/local/bin/puma'
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+

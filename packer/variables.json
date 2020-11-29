@@ -4,6 +4,6 @@
     "disk_size": "10",
     "machine_type": "f1-micro",
     "disk_type": "pd-standard",
-    "network": "Some Network",
+    "network": "SomeNetwork",
     "tags": "tcp-9292"
 }
