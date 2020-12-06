@@ -549,253 +549,243 @@ public_key_path = "~/.ssh/rmartsev_rsa.pub"
 disk_image = "reddit-base-1606657180"
 ```
 
-# Создание правила для SSH доступа
+Уничтожим созданные инстансы командой `terraform destroy`, затем создадим их заново командами `terraform plan` и `terraform apply`.
 
-В файле `main.tf` добавим ресурс сетевого экрана для 22 порта TCP:
+# Ansible
+
+Создадим директорию `ansible`, а в ней файл `requirements.txt` со следующим содержимым:
+
+```
+ansible>=2.4
+```
+
+Перейдем в созданную директорию и установим `ansible`:
+
+```
+$ pip install -r requirements.txt
+```
+
+Официальная документация по установке `ansinle`: https://docs.ansible.com/ansible/latest/intro_installation.html
+
+Запустим виртуальные машины, описанные ранее, с помощью терраформ, используя команду `terraform apply`.
+
+Хосты и группы хостов, которыми Ansible должен управлять, описываются в инвентори-файле. Создадим инвентори файл `ansible/inventory`, в котором укажем информацию о созданном инстансе приложения и параметры подключения к нему по SSH:
+
+```
+appserver ansible_host=34.76.39.102 ansible_user=rmartsev ansible_private_key_file=~/.ssh/rmartsev_rsa
+```
+
+где `appserver` - краткое имя, которое идентифицирует данный хост.
+
+Убедимся, что Ansible может управлять нашим хостом. Используем команду ansible для вызова модуля ping из командной строки.
+
+```
+$ ansible appserver -i ./inventory -m ping
+appserver | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+```
+
+Ping-модуль позволяет протестировать SSH-соединение, при этом ничего не изменяя на самом хосте.\
+`-m ping` - вызываемый модуль\
+`-i ./inventory` - путь до файла инвентори appserver - Имя хоста, которое указали в инвентори, откуда Ansible yзнает, как подключаться к хосту вывод команды:
+
+```
+$ ansible appserver -i ./inventory -m ping
+appserver | SUCCESS => {
+"changed": false,
+"ping": "pong"
+}
+```
+
+Добавим в файл `inventory` информацию о сервере базы данных:
 
 ```
 ...
-resource "google_compute_firewall" "firewall_ssh" {
-  name = "default-allow-ssh"
-  network = "default"
+dbserver ansible_host=104.155.107.160 ansible_user=rmartsev ansible_private_key_file=~/.ssh/rmartsev_rsa
+```
 
-  allow {
-    protocol = "tcp"
-    ports = ["22"]
-  }
+И проверим доступность сервера:
 
-  source_ranges = ["0.0.0.0/0"]
+```
+$ ansible dbserver -i inventory -m ping
+dbserver | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python"
+    },
+    "changed": false,
+    "ping": "pong"
 }
+```
+
+Создадим файл `ansible.cfg` для установки значений по умолчанию для работы `Ansible`, чтобы сократить в дальнейшем количество настроек, в том числе, в файле `inventory`.
+
+```
+[defaults]
+inventory = ./inventory
+remote_user = rmartsev
+private_key_file = ~/.ssh/rmartsev_rsa
+host_key_checking = False
+retry_files_enabled = False
+ansible_python_interpreter=auto
+interpreter_python=auto
+```
+
+Теперь мы можем удалить избыточную информацию из файла inventory и использовать значения по умолчанию:
+
+```
+appserver ansible_host=34.76.39.102
+dbserver ansible_host=104.155.107.160
+```
+
+Ansible может выполнять отдельные команды на инстансах. Например, можно посмотреть uptime следующим образом:
+
+```
+$ ansible dbserver -m command -a uptime
+dbserver | CHANGED | rc=0 >>
+ 14:55:29 up 36 min,  1 user,  load average: 0.00, 0.00, 0.00
+```
+
+Изменим файл `inventory` для работы с группами хостов:
+
+```
+[app] # ⬅ Это название группы
+appserver ansible_host=34.76.39.102 # ⬅ Cписок хостов в данной группе
+[db]
+dbserver ansible_host=104.155.107.160
+```
+
+Теперь мы можем управлять не отдельными хостами, а целыми группами, ссылаясь на имя группы:
+
+```
+$ ansible app -m ping
+appserver | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+```
+
+Перепишем файл `inventory` в формате YML и сохраним в файл `inventory.yml`:
+
+```
+all:
+  children:
+    app:
+      hosts:
+        appserver:
+          ansible_host: 34.76.39.102
+    db:
+      hosts:
+        dbserver:
+          ansible_host: 104.155.107.160
+```
+
+Для проверки выполним например следующую команду. Ключ -i переопределяет путь к инвентори файлу.
+
+```
+ansible all -m ping -i inventory.yml
+dbserver | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+appserver | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "ping": "pong"
+}
+```
+
+Проверим, что на app сервере установлены компоненты для работы приложения (ruby и bundler):
+
+```
+$ ansible app -m command -a 'ruby -v'
+appserver | CHANGED | rc=0 >>
+ruby 2.3.1p112 (2016-04-26) [x86_64-linux-gnu]
+$ ansible app -m command -a 'bundler -v'
+appserver | CHANGED | rc=0 >>
+Bundler version 1.11.2
+```
+
+А теперь попробуем указать две команды модулю command:
+
+```
+ansible app -m command -a 'ruby -v; bundler -v'
+appserver | FAILED | rc=1 >>
+ruby: invalid option -;  (-h will show valid options) (RuntimeError)non-zero return code
+```
+
+В то же время модуль shell успешно отработает:
+
+```
+ansible app -m shell -a 'ruby -v; bundler -v'
+appserver | CHANGED | rc=0 >>
+ruby 2.3.1p112 (2016-04-26) [x86_64-linux-gnu]
+Bundler version 1.11.2
+```
+
+Модуль command выполняет команды, не используя оболочку (sh, bash), поэтому в нем не работают перенаправления потоков и нет доступа к некоторым переменным окружения.
+
+Проверим на хосте с БД статус сервиса MongoDB с помощью модуля command или shell.
+
+```
+$ ansible db -m command -a 'systemctl status mongod'
+dbserver | CHANGED | rc=0 >>
+● mongod.service - High-performance, schema-free document-oriented database
+   Loaded: loaded (/lib/systemd/system/mongod.service; enabled; vendor preset: enabled)
+   Active: active (running) since Sun 2020-12-06 14:18:53 UTC; 52min ago
+     Docs: https://docs.mongodb.org/manual
+ Main PID: 1386 (mongod)
+    Tasks: 19
+   Memory: 52.3M
+      CPU: 13.831s
+   CGroup: /system.slice/mongod.service
+           └─1386 /usr/bin/mongod --quiet --config /etc/mongod.conf
+
+Dec 06 14:18:53 reddit-db systemd[1]: Started High-performance, schema-free document-oriented database.
+$ ansible db -m shell -a 'systemctl status mongod'
+dbserver | CHANGED | rc=0 >>
+● mongod.service - High-performance, schema-free document-oriented database
+   Loaded: loaded (/lib/systemd/system/mongod.service; enabled; vendor preset: enabled)
+   Active: active (running) since Sun 2020-12-06 14:18:53 UTC; 52min ago
+     Docs: https://docs.mongodb.org/manual
+ Main PID: 1386 (mongod)
+    Tasks: 19
+   Memory: 52.3M
+      CPU: 13.867s
+   CGroup: /system.slice/mongod.service
+           └─1386 /usr/bin/mongod --quiet --config /etc/mongod.conf
+
+Dec 06 14:18:53 reddit-db systemd[1]: Started High-performance, schema-free document-oriented database.
+```
+
+А можем выполнить ту же операцию используя модуль systemd, который предназначен для управления сервисами:
+
+```
+$ ansible db -m systemd -a name=mongod
+dbserver | SUCCESS => {
+    "ansible_facts": {
+        "discovered_interpreter_python": "/usr/bin/python3"
+    },
+    "changed": false,
+    "name": "mongod",
+    "status": {
+        "ActiveEnterTimestamp": "Sun 2020-12-06 14:18:53 UTC",
+        "ActiveEnterTimestampMonotonic": "8283704",
+        "ActiveExitTimestampMonotonic": "0",
+        "ActiveState": "active",
 ...
-```
-
-Т.к terraform ничего не знает о существующем правиле файервола (а всю информацию, об известных ему ресурсах, он хранит в state файле), то при выполнении команды apply terraform пытается создать новое правило файервола. Для того чтобы сказать terraform-у не создавать новое правило, а управлять уже имеющимся, в его "записную книжку" (state файл) о всех ресурсах, которыми он управляет, нужно занести информацию о существующем правиле.
-
-Команда import позволяет добавить информацию о созданном без помощи Terraform ресурсе в state файл. В директории terraform выполните команду:
-
-```
-$ terraform import google_compute_firewall.firewall_ssh default-allow-ssh
-google_compute_firewall.firewall_ssh: Importing from ID "default-allow-ssh"...
-google_compute_firewall.firewall_ssh: Import prepared!
-  Prepared google_compute_firewall for import
-google_compute_firewall.firewall_ssh: Refreshing state... [id=default-allow-ssh]
-
-Import successful!
-```
-
-# Ресурс IP адреса
-
-Зададим IP для инстанса с приложением в виде внешнего ресурса. Для этого определим ресурс google_compute_address в конфигурационном файле main.tf.
-
-```
-...
-resource "google_compute_address" "app_ip" {
-  name = "reddit-app-ip"
-}
-...
-```
-
-Для того чтобы использовать созданный IP адрес в нашем ресурсе VM нам необходимо сослаться на атрибуты ресурса, который этот IP создает, внутри конфигурации ресурса VM. В конфигурации ресурса VM определите, IP адрес для создаваемого инстанса.
-
-```
-...
-network_interface {
- network = "default"
- access_config {
-   nat_ip = google_compute_address.app_ip.address
- }
-}
-...
-```
-
-# Разделение конфигурации для создания двух VM
-
-Создадим файл `app.tf`, куда вынесем конфигурацию для VM с приложением
-
-```
-resource "google_compute_instance" "app" {
-  name = "reddit-app"
-  machine_type = "g1-small"
-  zone = var.zone
-  tags = ["reddit-app"]
-  boot_disk {
-    initialize_params { image = var.app_disk_image }
-  }
-  network_interface {
-    network = "default"
-    access_config {
-      nat_ip = google_compute_address.app_ip.address
-    }
-  }
-  metadata {
-    ssh-keys = "appuser:${file(var.public_key_path)}"
-  }
-}
-
-resource "google_compute_address" "app_ip" { 
-  name = "reddit-app-ip" 
-}
-
-resource "google_compute_firewall" "firewall_puma" {
-  name = "allow-puma-default"
-  network = "default"
-  allow {
-    protocol = "tcp", ports = ["9292"]
-  }
-  source_ranges = ["0.0.0.0/0"]
-  target_tags = ["reddit-app"]
-}
-```
-
-а также добавим переменную `app_disk_image` в файл `variables.tf`:
-
-```
-...
-variable app_disk_image {
-  description = "Disk image for reddit app"
-  default = "reddit-app-base"
-}
-...
-```
-
-Создадим файл `db.tf` для инстанса базы данных
-
-```
-resource "google_compute_instance" "db" {
-  name = "reddit-db"
-  machine_type = "g1-small"
-  zone = var.zone
-    tags = ["reddit-db"]
-    boot_disk {
-    initialize_params {
-      image = var.db_disk_image
-    }
-  }
-  network_interface {
-    network = "default"
-    access_config = {}
-  }
-  metadata {
-    ssh-keys = "appuser:${file(var.public_key_path)}"
-  }
-}
-
-resource "google_compute_firewall" "firewall_mongo" {
-  name = "allow-mongo-default"
-  network = "default"
-  allow {
-    protocol = "tcp"
-    ports = ["27017"]
-  }
-  target_tags = ["reddit-db"]
-  source_tags = ["reddit-app"]
-}
-```
-
-а также добавим переменную `db_disk_image` в файл `variables.tf`
-
-```
-...
-variable db_disk_image {
-description = "Disk image for reddit db"
-default = "reddit-db-base"
-}
-...
-```
-
-Вынесем правила сетевого экрана в файл `vpc.tf`
-
-```
-resource "google_compute_firewall" "firewall_ssh" {
-  name = "default-allow-ssh"
-  network = "default"
-  allow {
-    protocol = "tcp"
-    ports = ["22"]
-  }
-  source_ranges = ["0.0.0.0/0"]
-}
-```
-
-В итоге в файле `main.tf` должно остаться только определение провайдера:
-
-```
-provider "google" {
-  version = "~> 2.15"
-  project = var.project
-  region = var.region
-}
-```
-
-# Работа с модулями
-
-Создадим директорию `terraform/modules/db`, в которой создадим файлы: `main.tf`, `variables.tf`, `outputs.tf`.
-
-Скопируем файл `terraform/db.tf` в файл `terraform/modules/db/main.tf`.
-
-Файл `terraform/modiles/db/variables.tf` приведем к виду:
-
-```
-variable public_key_path {
-  description = "Path to the public key used to connect to instance"
-}
-
-variable zone {
-  description = "Zone"
-}
-
-variable db_disk_image {
-  description = "Disk image for reddit db"
-  default     = "reddit-db-base"
-}
-```
-
-По аналогии создадим директорию `terraform/modules/app` и необходимые файлы в ней.
-
-Для использования модулей удалим файлы `terraform/app.tf` и `terraform/db.tf` и дополним файл `terraform/main.tf` содержимым:
-
-```
-module "app" {
-  source          = "./modules/app"
-  public_key_path = var.public_key_path
-  zone            = var.zone
-  app_disk_image  = var.app_disk_image
-}
-
-module "db" {
-  source          = "./modules/db"
-  public_key_path = var.public_key_path
-  zone            = var.zone
-  db_disk_image   = var.db_disk_image
-}
-```
-
-После этого необходимо загрузить модули из указанных источников командой
-
-```
-$ terraform get
-```
-
-Информация о модулях будет загружена в директорию .terraform, в которой уже содержится провайдер.
-
-```
-$ tree .terraform 
-.terraform
-├── modules
-│   └── modules.json
-└── plugins
-    ├── registry.terraform.io
-    │   └── hashicorp
-    │       └── google
-    │           └── 2.15.0
-    │               └── darwin_amd64
-    │                   └── terraform-provider-google_v2.15.0_x4
-    └── selections.json
-
-7 directories, 3 files
-
-$ cat .terraform/modules/modules.json 
-{"Modules":[{"Key":"","Source":"","Dir":"."},{"Key":"app","Source":"./modules/app","Dir":"modules/app"},{"Key":"db","Source":"./modules/db","Dir":"modules/db"}]}
 ```
 
 
