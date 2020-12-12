@@ -6,22 +6,22 @@
 
 Создадим ADC:
 
-```
-$ gcloud auth application-default login
+``` bash
+gcloud auth application-default login
 ```
 
 # Создание шаблона Packer
 
 Для шаблона создадим директорию `packer` и создадим пустой файл `ubuntu16.json`, который будет шаблоном для VM.
 
-```
-$ mkdir packer
-$ touch ./packer/ubuntu16.json
+``` bash
+mkdir packer
+touch ./packer/ubuntu16.json
 ```
 
 Заполним файл информацией о создании виртуальной машины для билда и создании машинного образа (блок `builders`):
 
-```
+``` json
 {
     "builders": [
         {
@@ -50,7 +50,7 @@ $ touch ./packer/ubuntu16.json
 
 Добавим в файл `./packer/ubuntu16.json` информацию об устанавливаемом ПО и производимых настройках системы и конфигурации приложений на созданной VM (блок `provisioners`):
 
-```
+``` json
 ...
     "provisioners": [
         {
@@ -74,16 +74,16 @@ $ touch ./packer/ubuntu16.json
 
 Создадим директорию для скриптов, которые будут использованы провижинером, и скопируем туда ранее созданные `install_ruby.sh` и `install_mongodb.sh`.
 
-```
-$ cp config-scripts/install_mongodb.sh packer/scripts
-$ cp config-scripts/install_ruby.sh packer/scripts
+``` bash
+cp config-scripts/install_mongodb.sh packer/scripts
+cp config-scripts/install_ruby.sh packer/scripts
 ```
 
 Проверим на наличие ошибок подготовленную конфигурацию, исправим их при наличии и запустим создание образа
 
-```
-$ packer validate ubuntu16.json
-$ packer build -var-file=variables.json ubuntu16.json
+``` bash
+packer validate ubuntu16.json
+packer build -var-file=variables.json ubuntu16.json
 ```
 
 Образ успешно создан.
@@ -94,16 +94,16 @@ $ packer build -var-file=variables.json ubuntu16.json
 
 # Установка зависимостей и запуск приложения
 
-```
-$ git clone -b monolith https://github.com/express42/reddit.git
-$ cd reddit/
-$ bundle install
-$ puma -d
+``` bash
+git clone -b monolith https://github.com/express42/reddit.git
+cd reddit/
+bundle install
+puma -d
 ```
 
 Проверяем, запуск сервера
 
-```
+``` bash
 $ ps aux | grep puma
 rmartsev  2687  2.1  1.3 515400 26720 ?        Sl   19:43   0:00 puma 3.10.0 (tcp://0.0.0.0:9292) [reddit]
 rmartsev  2701  0.0  0.0  12944  1004 pts/0    S+   19:43   0:00 grep --color=auto puma
@@ -111,7 +111,7 @@ rmartsev  2701  0.0  0.0  12944  1004 pts/0    S+   19:43   0:00 grep --color=au
 
 Добавим установку и запуск `puma` в образ. Для этого подготовим файл `immutable.json`:
 
-```
+``` json
 {
     "builders": [
         {
@@ -154,8 +154,8 @@ rmartsev  2701  0.0  0.0  12944  1004 pts/0    S+   19:43   0:00 grep --color=au
             "inline": [
                 "sudo mv /tmp/reddit.service /etc/systemd/system/",
                 "sudo systemctl daemon-reload",
-		        "sudo systemctl start reddit.service",
-		        "sudo systemctl enable reddit.service"
+                "sudo systemctl start reddit.service",
+                "sudo systemctl enable reddit.service"
             ]
         }
     ]
@@ -164,7 +164,7 @@ rmartsev  2701  0.0  0.0  12944  1004 pts/0    S+   19:43   0:00 grep --color=au
 
 Также добавим директорию `files` для файлов, загружаемых в собираемый образ. В директории подготовим файл `reddit.service`, необходимый для запуска сервиса
 
-```
+``` ini
 [Unit]
 Description=Puma HTTP Server (Reddit)
 After=network.target
@@ -189,7 +189,7 @@ WantedBy=multi-user.target
 
 Команда для сборки образа:
 
-```
+``` bash
 packer build -var-file=variables.json immutable.json
 ```
 
@@ -201,7 +201,7 @@ packer build -var-file=variables.json immutable.json
 
 Секция `Provider` позволяет Terraform управлять ресурсами GCP через API вызовы.
 
-```
+``` terraform
 terraform {
     # Версия terraform
     required_version = "0.13.5"
@@ -219,7 +219,7 @@ provider "google" {
 
 Провайдеры `Terraform` являются загружаемыми модулями начиная с версии 0.10. Для того, чтобы загрузить провайдер и начать его использовать, необходимо выполнить команду инициализации в директории `terraform`:
 
-```
+``` bash
 $ terraform init
 
 Initializing the backend...
@@ -242,7 +242,7 @@ commands will detect it and remind you to do so if necessary.
 
 Для создания инстанса добавим в файл `main.tf` секцию `resource`
 
-```
+``` terraform
 resource "google_compute_instance" "app" {
     name = "reddit-map"
     machine_type = "g1-small"
@@ -263,7 +263,7 @@ resource "google_compute_instance" "app" {
 
 Для запуска инстанса , описание характеристик которого было описано в конфигурационном файле `main.cf` команду:
 
-```
+``` bash
 $ terraform apply
 
 An execution plan has been generated and is shown below.
@@ -351,14 +351,14 @@ Apply complete! Resources: 1 added, 0 changed, 0 destroyed.
 
 Для отображения внешнего IP адреса созданного инстанса, выполним команду:
 
-```
+``` bash
 $ terraform show | grep nat_ip
             nat_ip       = "35.195.208.148"
 ```
 
 Добавим ключ SSH для доступа к серверу. Для этого внесем изменения в файл `main.tf`
 
-```
+``` terraform
 ...
     metadata = {
         # Путь до публичного ключа
@@ -373,7 +373,7 @@ $ terraform show | grep nat_ip
 
 Чтобы не мешать выходные переменные с основной конфигурацией наших ревурсов, создадим их в отдельном файле, который назовем `output.tf`. Добавим в него переменную, содержащую внешний IP адрес инстанса:
 
-```
+``` terraform
 output "app_external-ip" {
     value="${google_compute_instance.app.network_interface[0].access_config[0].nat_ip}"
 }
@@ -383,7 +383,7 @@ output "app_external-ip" {
 
 Создадим правило сетевого экрана, для этого добавим ресурс в файл main.tf:
 
-```
+``` terraform
 resource "google_compute_firewall" "firewall_puma" {
     name = "allow-puma-default"
     # Название сети, в которой действует правило
@@ -402,14 +402,14 @@ resource "google_compute_firewall" "firewall_puma" {
 
 Планируем и применяем изменения
 
-```
-$ terraform plan
-$ terraform apply
+``` bash
+terraform plan
+terraform apply
 ```
 
 Правило сетевого экрана применимо к инстансам с тэгом `reddit-app`. Чтобы применить данное правило к созданному инстансу, присвоим ему необходимую метку. Для этого внесем изменения в файл `main.tf`:
 
-```
+``` terraform
 ...
 resource "google_compute_instance" "app" {
 ...
@@ -423,7 +423,7 @@ resource "google_compute_instance" "app" {
 
 Добавим провижинер, позволяющий копировать содержимое файла на удаленную машину
 
-```
+``` terraform
 provisioner "file" {
     source = "files/puma.service"
     destination = "/tmp/puma.service"
@@ -434,7 +434,7 @@ provisioner "file" {
 
 Сщдержимое файла `files/puma.service`:
 
-```
+``` ini
 [Unit]
 Description=Puma HTTP Server
 After=network.target
@@ -452,7 +452,7 @@ WantedBy=multi-user.target
 
 Добавим еще провижинер для удаленного запуска скрипта `files/deploy.sh`
 
-```
+``` terraform
 provisioner "remote-exec" {
     script = "files/deploy.sh"
 }
@@ -460,7 +460,7 @@ provisioner "remote-exec" {
 
 Содержимое файла `files/deploy.sh`:
 
-```
+``` bash
 #!/bin/bash
 set -e
 
@@ -477,7 +477,7 @@ sudo systemctl enable puma
 
 Определим параметры подключения провиженеров к VM. Внутрь ресурса VM, перед определением провижинеров, добавbv следующую секцию
 
-```
+``` terraform
 connection {
   type = "ssh"
   # host = self.network_interface[0].access_config[0].nat_ip
@@ -490,17 +490,17 @@ connection {
 
 По умолчанию провижинеры запускаются сразу после создания ресурса, поэтому чтобы проверить их работу, ресурс необхоидмо пересоздать. Для этого используем команду отметки ресурса для пересоздания, и применим изменения.
 
-```
-$ terraform taint google_compute_instance.app
-$ terraform plan
-$ terraform apply
+``` bash
+terraform taint google_compute_instance.app
+terraform plan
+terraform apply
 ```
 
 Проверим работоспособность ресурса, перейдя по адресу в браузере: http://<external-ip>:9292
 
 Для параметризации конфигурационного файла есть возможность использовать входные переменные. Для этого созданим конфигурационный файл `variables.tf`:
 
-```
+``` terraform
 variable project {
   description = "Project ID"
 }
@@ -520,7 +520,7 @@ variable disk_image {
 
 Внесем изменения в файл `main.tf`, заменив значения переменными:
 
-```
+``` terraform
 ...
 provider "google" {
     version = "2.15.0"
@@ -543,7 +543,7 @@ metadata = {
 
 Теперь определим переменные в файле `terraform.tfvars`:
 
-```
+``` terraform
 project = "infra-296308"
 public_key_path = "~/.ssh/rmartsev_rsa.pub"
 disk_image = "reddit-base-1606657180"
@@ -555,14 +555,14 @@ disk_image = "reddit-base-1606657180"
 
 Создадим директорию `ansible`, а в ней файл `requirements.txt` со следующим содержимым:
 
-```
+``` ansible
 ansible>=2.4
 ```
 
 Перейдем в созданную директорию и установим `ansible`:
 
-```
-$ pip install -r requirements.txt
+``` bash
+pip install -r requirements.txt
 ```
 
 Официальная документация по установке `ansinle`: https://docs.ansible.com/ansible/latest/intro_installation.html
@@ -571,7 +571,7 @@ $ pip install -r requirements.txt
 
 Хосты и группы хостов, которыми Ansible должен управлять, описываются в инвентори-файле. Создадим инвентори файл `ansible/inventory`, в котором укажем информацию о созданном инстансе приложения и параметры подключения к нему по SSH:
 
-```
+``` bash
 appserver ansible_host=34.76.39.102 ansible_user=rmartsev ansible_private_key_file=~/.ssh/rmartsev_rsa
 ```
 
@@ -579,7 +579,7 @@ appserver ansible_host=34.76.39.102 ansible_user=rmartsev ansible_private_key_fi
 
 Убедимся, что Ansible может управлять нашим хостом. Используем команду ansible для вызова модуля ping из командной строки.
 
-```
+``` bash
 $ ansible appserver -i ./inventory -m ping
 appserver | SUCCESS => {
     "ansible_facts": {
@@ -594,7 +594,7 @@ Ping-модуль позволяет протестировать SSH-соеди
 `-m ping` - вызываемый модуль\
 `-i ./inventory` - путь до файла инвентори appserver - Имя хоста, которое указали в инвентори, откуда Ansible yзнает, как подключаться к хосту вывод команды:
 
-```
+``` bash
 $ ansible appserver -i ./inventory -m ping
 appserver | SUCCESS => {
 "changed": false,
@@ -604,14 +604,14 @@ appserver | SUCCESS => {
 
 Добавим в файл `inventory` информацию о сервере базы данных:
 
-```
+``` bash
 ...
 dbserver ansible_host=104.155.107.160 ansible_user=rmartsev ansible_private_key_file=~/.ssh/rmartsev_rsa
 ```
 
 И проверим доступность сервера:
 
-```
+``` bash
 $ ansible dbserver -i inventory -m ping
 dbserver | SUCCESS => {
     "ansible_facts": {
@@ -624,7 +624,7 @@ dbserver | SUCCESS => {
 
 Создадим файл `ansible.cfg` для установки значений по умолчанию для работы `Ansible`, чтобы сократить в дальнейшем количество настроек, в том числе, в файле `inventory`.
 
-```
+``` ini
 [defaults]
 inventory = ./inventory
 remote_user = rmartsev
@@ -637,14 +637,14 @@ interpreter_python=auto
 
 Теперь мы можем удалить избыточную информацию из файла inventory и использовать значения по умолчанию:
 
-```
+``` bash
 appserver ansible_host=34.76.39.102
 dbserver ansible_host=104.155.107.160
 ```
 
 Ansible может выполнять отдельные команды на инстансах. Например, можно посмотреть uptime следующим образом:
 
-```
+``` bash
 $ ansible dbserver -m command -a uptime
 dbserver | CHANGED | rc=0 >>
  14:55:29 up 36 min,  1 user,  load average: 0.00, 0.00, 0.00
@@ -652,7 +652,7 @@ dbserver | CHANGED | rc=0 >>
 
 Изменим файл `inventory` для работы с группами хостов:
 
-```
+``` ini
 [app] # ⬅ Это название группы
 appserver ansible_host=34.76.39.102 # ⬅ Cписок хостов в данной группе
 [db]
@@ -661,7 +661,7 @@ dbserver ansible_host=104.155.107.160
 
 Теперь мы можем управлять не отдельными хостами, а целыми группами, ссылаясь на имя группы:
 
-```
+``` bash
 $ ansible app -m ping
 appserver | SUCCESS => {
     "ansible_facts": {
@@ -674,7 +674,7 @@ appserver | SUCCESS => {
 
 Перепишем файл `inventory` в формате YML и сохраним в файл `inventory.yml`:
 
-```
+``` yml
 all:
   children:
     app:
@@ -689,8 +689,8 @@ all:
 
 Для проверки выполним например следующую команду. Ключ -i переопределяет путь к инвентори файлу.
 
-```
-ansible all -m ping -i inventory.yml
+``` bash
+$ ansible all -m ping -i inventory.yml
 dbserver | SUCCESS => {
     "ansible_facts": {
         "discovered_interpreter_python": "/usr/bin/python3"
@@ -709,7 +709,7 @@ appserver | SUCCESS => {
 
 Проверим, что на app сервере установлены компоненты для работы приложения (ruby и bundler):
 
-```
+``` bash
 $ ansible app -m command -a 'ruby -v'
 appserver | CHANGED | rc=0 >>
 ruby 2.3.1p112 (2016-04-26) [x86_64-linux-gnu]
@@ -720,16 +720,16 @@ Bundler version 1.11.2
 
 А теперь попробуем указать две команды модулю command:
 
-```
-ansible app -m command -a 'ruby -v; bundler -v'
+``` bash
+$ ansible app -m command -a 'ruby -v; bundler -v'
 appserver | FAILED | rc=1 >>
 ruby: invalid option -;  (-h will show valid options) (RuntimeError)non-zero return code
 ```
 
 В то же время модуль shell успешно отработает:
 
-```
-ansible app -m shell -a 'ruby -v; bundler -v'
+``` bash
+$ ansible app -m shell -a 'ruby -v; bundler -v'
 appserver | CHANGED | rc=0 >>
 ruby 2.3.1p112 (2016-04-26) [x86_64-linux-gnu]
 Bundler version 1.11.2
@@ -739,7 +739,7 @@ Bundler version 1.11.2
 
 Проверим на хосте с БД статус сервиса MongoDB с помощью модуля command или shell.
 
-```
+``` bash
 $ ansible db -m command -a 'systemctl status mongod'
 dbserver | CHANGED | rc=0 >>
 ● mongod.service - High-performance, schema-free document-oriented database
@@ -772,7 +772,7 @@ Dec 06 14:18:53 reddit-db systemd[1]: Started High-performance, schema-free docu
 
 А можем выполнить ту же операцию используя модуль systemd, который предназначен для управления сервисами:
 
-```
+``` bash
 $ ansible db -m systemd -a name=mongod
 dbserver | SUCCESS => {
     "ansible_facts": {
@@ -788,4 +788,879 @@ dbserver | SUCCESS => {
 ...
 ```
 
+# Ansible 2
 
+## Один плейбук, один сценарий
+
+Создадим файл `ansible/reddit_app.yml`:
+
+``` yml
+---
+- name: Configure hosts & deploy application # <-- Словесное описание сценария (name)
+  hosts: all # <-- Для каких хостов будут выполняться описанные ниже таски (hosts)
+
+  tasks: # <-- Блок тасков (заданий), которые будут выполняться для данных хостов
+  - name: Change mongo config file
+    become: true # <-- Выполнить задание от root
+    template:
+      src: templates/mongod.conf.j2 # <-- Путь до локального файла-шаблона
+      dest: /etc/mongod.conf # <-- Путь на удаленном хосте
+      mode: 0644 # <-- Права на файл, которые нужно установить
+    tags: db-tag # <-- Список тэгов для задачи
+```
+
+Создадим файл `ansible/templates/mongod.conf.j2`:
+
+``` jinja2
+# Where and how to store data.
+storage:
+  dbPath: /var/lib/mongodb
+  journal:
+    enabled: true
+
+# where to write logging data.
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod.log
+
+# network interfaces
+net:
+  port: {{ mongo_port | default('27017') }}
+  bindIp: {{ mongo_bind_ip }}
+```
+
+Проверим корректность составления плейбука командой
+
+``` bash
+$ ansible-playbook reddit_app.yml --check --limit db
+
+PLAY [Configure hosts & deploy application] *************************************************************************************************************************************************************************************
+
+TASK [Gathering Facts] **********************************************************************************************************************************************************************************************************
+ok: [dbserver]
+
+TASK [Change mongo config file] *************************************************************************************************************************************************************************************************
+fatal: [dbserver]: FAILED! => {"changed": false, "msg": "AnsibleUndefinedVariable: 'mongo_bind_ip' is undefined"}
+
+PLAY RECAP **********************************************************************************************************************************************************************************************************************
+dbserver                   : ok=1    changed=0    unreachable=0    failed=1    skipped=0    rescued=0    ignored=0   
+```
+
+Не определена переменная, исправим ошибку. Внесем изменения в файл `ansible/reddit_app.yml`:
+
+``` yml
+---
+- name: Configure hosts & deploy application # <-- Словесное описание сценария (name)
+  hosts: all # <-- Для каких хостов будут выполняться описанные ниже таски (hosts)
+  vars:
+    mongo_bind_ip: 0.0.0.0 # <-- Переменная задается в блоке vars
+
+  tasks: # <-- Блок тасков (заданий), которые будут выполняться для данных хостов
+  - name: Change mongo config file
+    become: true # <-- Выполнить задание от root
+    template:
+      src: templates/mongod.conf.j2 # <-- Путь до локального файла-шаблона
+      dest: /etc/mongod.conf # <-- Путь на удаленном хосте
+      mode: 0644 # <-- Права на файл, которые нужно установить
+    tags: db-tag # <-- Список тэгов для задачи
+```
+
+Повторим проверку:
+
+``` bash
+ansible-playbook reddit_app.yml --check --limit db
+
+PLAY [Configure hosts & deploy application] *************************************************************************************************************************************************************************************
+
+TASK [Gathering Facts] **********************************************************************************************************************************************************************************************************
+ok: [dbserver]
+
+TASK [Change mongo config file] *************************************************************************************************************************************************************************************************
+changed: [dbserver]
+
+PLAY RECAP **********************************************************************************************************************************************************************************************************************
+dbserver                   : ok=2    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+```
+
+Определим handler для рестарта БД и добавим вызов handler-а в созданный нами таск. Файл `ansible/reddit_app.yml`:
+
+``` yml
+---
+- name: Configure hosts & deploy application # <-- Словесное описание сценария (name)
+  hosts: all # <-- Для каких хостов будут выполняться описанные ниже таски (hosts)
+  vars:
+    mongo_bind_ip: 0.0.0.0 # <-- Переменная задается в блоке vars
+
+  tasks: # <-- Блок тасков (заданий), которые будут выполняться для данных хостов
+  - name: Change mongo config file
+    become: true # <-- Выполнить задание от root
+    template:
+      src: templates/mongod.conf.j2 # <-- Путь до локального файла-шаблона
+      dest: /etc/mongod.conf # <-- Путь на удаленном хосте
+      mode: 0644 # <-- Права на файл, которые нужно установить
+    tags: db-tag # <-- Список тэгов для задачи
+    notify: restart mongod
+
+  handlers: # <-- Добавим блок handlers и задачу
+  - name: restart mongod
+    become: true
+    service: name=mongod state=restarted
+```
+
+Сделаем проверку изменений:
+
+``` bash
+ansible-playbook reddit_app.yml --check --limit db
+
+PLAY [Configure hosts & deploy application] **********************************************************************
+
+TASK [Gathering Facts] *******************************************************************************************
+ok: [dbserver]
+
+TASK [Change mongo config file] **********************************************************************************
+changed: [dbserver]
+
+RUNNING HANDLER [restart mongod] *********************************************************************************
+changed: [dbserver]
+
+PLAY RECAP *******************************************************************************************************
+dbserver                   : ok=3    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+```
+
+Запустим плейбук:
+
+``` bash
+$ ansible-playbook reddit_app.yml --limit db
+
+PLAY [Configure hosts & deploy application] **********************************************************************
+
+TASK [Gathering Facts] *******************************************************************************************
+ok: [dbserver]
+
+TASK [Change mongo config file] **********************************************************************************
+changed: [dbserver]
+
+RUNNING HANDLER [restart mongod] *********************************************************************************
+changed: [dbserver]
+
+PLAY RECAP *******************************************************************************************************
+dbserver                   : ok=3    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+```
+
+Созддим файл `ansible/files/puma.service`:
+
+``` ini
+[Unit]
+Description=Puma HTTP Server
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=/home/appuser/db_config
+User=appuser
+WorkingDirectory=/home/appuser/reddit
+ExecStart=/bin/bash -lc 'puma'
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Добавим в наш сценарий таск для копирования unit-файла на хост приложения. Для копирования простого файла на удаленный хост, используем модуль copy, а для настройки автостарта Puma-сервера используем модуль systemd.
+
+Добавим новый handler, который укажет systemd, что unit для сервиса изменился и его следует перечитать:
+
+Файл `ansible/reddit_app.yml`:
+
+``` yml
+---
+- name: Configure hosts & deploy application # <-- Словесное описание сценария (name)
+  hosts: all # <-- Для каких хостов будут выполняться описанные ниже таски (hosts)
+  vars:
+    mongo_bind_ip: 0.0.0.0 # <-- Переменная задается в блоке vars
+
+  tasks: # <-- Блок тасков (заданий), которые будут выполняться для данных хостов
+  - name: Change mongo config file
+    become: true # <-- Выполнить задание от root
+    template:
+      src: templates/mongod.conf.j2 # <-- Путь до локального файла-шаблона
+      dest: /etc/mongod.conf # <-- Путь на удаленном хосте
+      mode: 0644 # <-- Права на файл, которые нужно установить
+    tags: db-tag # <-- Список тэгов для задачи
+    notify: restart mongod
+
+  - name: Add unit file for Puma
+    become: true
+    copy:
+      src: files/puma.service
+      dest: /etc/systemd/system/puma.service
+    tags: app-tag
+    notify: reload puma
+
+  - name: enable puma
+    become: true
+    systemd: name=puma enabled=yes
+    tags: app-tag
+
+  handlers: # <-- Добавим блок handlers и задачу
+  - name: restart mongod
+    become: true
+    service: name=mongod state=restarted
+
+  - name: reload puma
+    become: true
+    systemd: name=puma state=restarted
+```
+
+unit-файл для вебсервера изменился. В него добавилась строка чтения переменных окружения из файла:
+
+``` ini
+EnvironmentFile=/home/appuser/db_config
+```
+
+Через переменную окружения мы будем передавать адрес инстанса БД, чтобы приложение знало, куда ему обращаться для хранения данных.
+
+Создадим шаблон в директории `templates/db_config.j2` куда добавим следующую строку:
+
+``` jinja2
+DATABASE_URL={{ db_host }}
+```
+
+Как видим, данный шаблон содержит присвоение переменной `DATABASE_URL` значения, которое мы передаем через Ansible переменную `db_host`.
+
+Добавим таск для копирования созданного шаблона и определим переменную. Файл `ansible/reddit_app.yml`:
+
+IP адрес базы данных можно подсмотреть в `terraform` командой
+
+``` bash
+$ terraform show
+...
+Outputs:
+
+app_external_ip = "34.76.39.102"
+db_external_ip = "104.155.107.160"
+```
+
+``` yml
+---
+- name: Configure hosts & deploy application # <-- Словесное описание сценария (name)
+  hosts: all # <-- Для каких хостов будут выполняться описанные ниже таски (hosts)
+  vars:
+    mongo_bind_ip: 0.0.0.0 # <-- Переменная задается в блоке vars
+    db_host: 104.155.107.160 # <-- подставьте сюда ваш IP
+
+  tasks: # <-- Блок тасков (заданий), которые будут выполняться для данных хостов
+  - name: Change mongo config file
+    become: true # <-- Выполнить задание от root
+    template:
+      src: templates/mongod.conf.j2 # <-- Путь до локального файла-шаблона
+      dest: /etc/mongod.conf # <-- Путь на удаленном хосте
+      mode: 0644 # <-- Права на файл, которые нужно установить
+    tags: db-tag # <-- Список тэгов для задачи
+    notify: restart mongod
+
+  - name: Add unit file for Puma
+    become: true
+    copy:
+      src: files/puma.service
+      dest: /etc/systemd/system/puma.service
+    tags: app-tag
+    notify: reload puma
+
+  - name: Add config for DB connection
+    template:
+      src: templates/db_config.j2
+      dest: /home/rmartsev/db_config
+    tags: app-tag
+
+  - name: enable puma
+    become: true
+    systemd: name=puma enabled=yes
+    tags: app-tag
+
+  handlers: # <-- Добавим блок handlers и задачу
+  - name: restart mongod
+    become: true
+    service: name=mongod state=restarted
+
+  - name: reload puma
+    become: true
+    systemd: name=puma state=restarted
+```
+
+Сделаем проверку конфигурации:
+
+``` bash
+$ ansible-playbook reddit_app.yml --check --limit app --tags app-tag
+
+PLAY [Configure hosts & deploy application] **********************************************************************
+
+TASK [Gathering Facts] *******************************************************************************************
+ok: [appserver]
+
+TASK [Add unit file for Puma] ************************************************************************************
+changed: [appserver]
+
+TASK [Add config for DB connection] ******************************************************************************
+changed: [appserver]
+
+TASK [enable puma] ***********************************************************************************************
+ok: [appserver]
+
+RUNNING HANDLER [reload puma] ************************************************************************************
+changed: [appserver]
+
+PLAY RECAP *******************************************************************************************************
+appserver                  : ok=5    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+```
+
+Выполним плейбук:
+
+``` bash
+ansible-playbook reddit_app.yml --limit app --tags app-tag
+
+PLAY [Configure hosts & deploy application] **********************************************************************
+
+TASK [Gathering Facts] *******************************************************************************************
+ok: [appserver]
+
+TASK [Add unit file for Puma] ************************************************************************************
+ok: [appserver]
+
+TASK [Add config for DB connection] ******************************************************************************
+changed: [appserver]
+
+TASK [enable puma] ***********************************************************************************************
+ok: [appserver]
+
+PLAY RECAP *******************************************************************************************************
+appserver                  : ok=4    changed=1    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+```
+
+Добавим еще несколько тасков в сценарий нашего плейбука. Используем модули git и bundle для клонирования последней версии кода нашего приложения и установки зависимых Ruby Gems через bundle.
+
+Файл `ansible/reddit_app.yml`:
+
+``` yml
+---
+- name: Configure hosts & deploy application # <-- Словесное описание сценария (name)
+  hosts: all # <-- Для каких хостов будут выполняться описанные ниже таски (hosts)
+  vars:
+    mongo_bind_ip: 0.0.0.0 # <-- Переменная задается в блоке vars
+    db_host: 104.155.107.160 # <-- подставьте сюда ваш IP
+
+  tasks: # <-- Блок тасков (заданий), которые будут выполняться для данных хостов
+  
+  - name: Change mongo config file
+    become: true # <-- Выполнить задание от root
+    template:
+      src: templates/mongod.conf.j2 # <-- Путь до локального файла-шаблона
+      dest: /etc/mongod.conf # <-- Путь на удаленном хосте
+      mode: 0644 # <-- Права на файл, которые нужно установить
+    tags: db-tag # <-- Список тэгов для задачи
+    notify: restart mongod
+
+  - name: Add unit file for Puma
+    become: true
+    copy:
+      src: files/puma.service
+      dest: /etc/systemd/system/puma.service
+    tags: app-tag
+    notify: reload puma
+
+  - name: Add config for DB connection
+    template:
+      src: templates/db_config.j2
+      dest: /home/rmartsev/db_config
+    tags: app-tag
+
+  - name: enable puma
+    become: true
+    systemd: name=puma enabled=yes
+    tags: app-tag
+
+  - name: Fetch the latest version of application code
+    git:
+      repo: 'https://github.com/express42/reddit.git'
+      dest: /home/appuser/reddit
+      version: monolith # <-- Указываем нужную ветку
+    tags: deploy-tag
+    notify: reload puma
+    
+  - name: Bundle install
+    bundler:
+      state: present
+      chdir: /home/appuser/reddit # <-- В какой директории выполнить команду bundle
+    tags: deploy-tag
+
+  handlers: # <-- Добавим блок handlers и задачу
+
+  - name: restart mongod
+    become: true
+    service: name=mongod state=restarted
+
+  - name: reload puma
+    become: true
+    systemd: name=puma state=restarted
+```
+
+Проверяем плейбук и запускаем его:
+
+``` bash
+ansible-playbook reddit_app.yml --check --limit app --tags deploy-tag
+ansible-playbook reddit_app.yml --limit app --tags deploy-tag
+```
+
+Мы создали один плейбук, в котором определили один сценарий (play) и, как помним, для запуска нужных тасков на заданной группе хостов мы использовали опцию --limit для указания группы хостов и --tags для указания нужных тасков.
+
+Очевидна проблема такого подхода, которая состоит в том, что мы должны помнить при каждом запуске плейбука, на каком хосте какие таски мы хотим применить, и передавать это в опциях командной строки.
+
+## Один плейбук, несколько сценариев
+
+Скопируем определение сценария из `reddit_app.yml` в `reddit_app2.yml` и всю информацию, относящуюся к настройке MongoDB, которая будет включать в себя таски, хендлеры и переменные.
+
+Помним, что таски для настройки MongoDB приложения мы помечали тегом db-tag.
+
+``` yml
+---
+- name: Configure hosts & deploy application
+  hosts: all
+  vars:
+    mongo_bind_ip: 0.0.0.0
+  tasks:
+    - name: Change mongo config file
+      become: true
+      template:
+        src: templates/mongod.conf.j2
+        dest: /etc/mongod.conf
+        mode: 0644
+      tags: db-tag
+      notify: restart mongod
+
+  handlers:
+  - name: restart mongod
+    become: true
+    service: name=mongod state=restarted
+```
+
+Внесем изменения в файл:
+
+* Изменим словесное описание
+* Укажем нужную группу хостов
+* Уберем теги из тасков и определим тег на уровне сценария, чтобы мы могли запускать сценарий, используя тег.
+
+Также заметим, что все наши таски требуют выполнения изпод пользователя root, поэтому нет смысла их указывать для каждого task.
+
+* Вынесем become: true на уровень сценария.
+
+``` yml
+---
+- name: Configure MongoDB
+  hosts: db
+  tags: db-tag
+  become: true
+  vars:
+    mongo_bind_ip: 0.0.0.0
+  tasks:
+    - name: Change mongo config file
+      template:
+        src: templates/mongod.conf.j2
+        dest: /etc/mongod.conf
+        mode: 0644
+      notify: restart mongod
+
+  handlers:
+  - name: restart mongod
+    service: name=mongod state=restarted
+```
+
+Аналогичным образом определим еще один сценарий для настройки инстанса приложения.
+
+``` yml
+---
+- name: Configure MongoDB
+  hosts: db
+  tags: db-tag
+  become: true
+  vars:
+    mongo_bind_ip: 0.0.0.0
+  tasks:
+    - name: Change mongo config file
+      template:
+        src: templates/mongod.conf.j2
+        dest: /etc/mongod.conf
+        mode: 0644
+      notify: restart mongod
+
+  handlers:
+  - name: restart mongod
+    service: name=mongod state=restarted
+
+- name: Configure hosts & deploy application
+  hosts: all
+  vars:
+   db_host: 10.132.0.2
+  tasks:
+    - name: Add unit file for Puma
+      become: true
+      copy:
+        src: files/puma.service
+        dest: /etc/systemd/system/puma.service
+      tags: app-tag
+      notify: reload puma
+
+    - name: Add config for DB connection
+      template:
+        src: templates/db_config.j2
+        dest: /home/appuser/db_config
+      tags: app-tag
+
+    - name: enable puma
+      become: true
+      systemd: name=puma enabled=yes
+      tags: app-tag
+
+  handlers:
+  - name: reload puma
+    become: true
+    systemd: name=puma state=restarted
+```
+
+Внесем изменения в файл:
+
+* Изменим словесное описание
+* Укажем нужную группу хостов
+* Уберем теги из тасков и определим тег на уровне сценария, чтобы мы запускать сценарий, используя тег.
+* Также заметим, что большинство из наших тасков требуют выполнения из-под пользователя root, поэтому вынесем become: true на уровень сценария.
+* В таске, который копирует конфиг-файл в домашнюю директорию пользователя appuser, явно укажем пользователя и владельца файла.
+
+``` yml
+---
+- name: Configure MongoDB
+  hosts: db
+  tags: db-tag
+  become: true
+  vars:
+    mongo_bind_ip: 0.0.0.0
+  tasks:
+    - name: Change mongo config file
+      template:
+        src: templates/mongod.conf.j2
+        dest: /etc/mongod.conf
+        mode: 0644
+      notify: restart mongod
+
+  handlers:
+  - name: restart mongod
+    service: name=mongod state=restarted
+
+- name: Configure App
+  hosts: app
+  tags: app-tag
+  become: true
+  vars:
+   db_host: 35.195.123.178
+  tasks:
+    - name: Add unit file for Puma
+      copy:
+        src: files/puma.service
+        dest: /etc/systemd/system/puma.service
+      notify: reload puma
+
+    - name: Add config for DB connection
+      template:
+        src: templates/db_config.j2
+        dest: /home/appuser/db_config
+        owner: appuser
+        group: appuser
+
+    - name: enable puma
+      systemd: name=puma enabled=yes
+
+  handlers:
+  - name: reload puma
+    systemd: name=puma state=restarted
+```
+
+Для чистоты проверки наших плейбуков пересоздадим инфраструктуру окружения stage, используя команды
+
+``` bash
+terraform destroy
+terraform apply -auto-approve=false
+```
+
+Изменим IP адреса в соответствии с предоставленным `terraform` в файлах `ansible/reddit_app2.yml` и `ansible/inventory`. Результат:
+
+``` yml
+---
+- name: Configure MongoDB
+  hosts: db
+  tags: db-tag
+  become: true
+  vars:
+    mongo_bind_ip: 0.0.0.0
+  tasks:
+    - name: Change mongo config file
+      template:
+        src: templates/mongod.conf.j2
+        dest: /etc/mongod.conf
+        mode: 0644
+      notify: restart mongod
+
+  handlers:
+  - name: restart mongod
+    service: name=mongod state=restarted
+
+- name: Configure App
+  hosts: app
+  tags: app-tag
+  become: true
+  vars:
+   db_host: 35.195.123.178
+  tasks:
+    - name: Add unit file for Puma
+      copy:
+        src: files/puma.service
+        dest: /etc/systemd/system/puma.service
+      notify: reload puma
+
+    - name: Add config for DB connection
+      template:
+        src: templates/db_config.j2
+        dest: /home/rmartsev/db_config
+        owner: rmartsev
+        group: rmartsev
+
+    - name: enable puma
+      systemd: name=puma enabled=yes
+
+  handlers:
+  - name: reload puma
+    systemd: name=puma state=restarted
+```
+
+Проверим корректность плейбука и запустим его
+
+``` bash
+ansible-playbook reddit_app2.yml --tags db-tag --check
+ansible-playbook reddit_app2.yml --tags db-tag
+ansible-playbook reddit_app2.yml --tags app-tag --check
+ansible-playbook reddit_app2.yml --tags app-tag
+```
+
+Добавим также таски для деплоя. Результат:
+
+``` yml
+---
+- name: Configure MongoDB
+  hosts: db
+  tags: db-tag
+  become: true
+  vars:
+    mongo_bind_ip: 0.0.0.0
+
+  tasks:
+
+    - name: Change mongo config file
+      template:
+        src: templates/mongod.conf.j2
+        dest: /etc/mongod.conf
+        mode: 0644
+      notify: restart mongod
+
+  handlers:
+  - name: restart mongod
+    service: name=mongod state=restarted
+
+- name: Configure App
+  hosts: app
+  tags: app-tag
+  become: true
+  vars:
+    db_host: 35.195.123.178
+  
+  tasks:
+
+    - name: Add unit file for Puma
+      copy:
+        src: files/puma.service
+        dest: /etc/systemd/system/puma.service
+      notify: reload puma
+
+    - name: Add config for DB connection
+      template:
+        src: templates/db_config.j2
+        dest: /home/rmartsev/db_config
+        owner: rmartsev
+        group: rmartsev
+
+    - name: enable puma
+      systemd: name=puma enabled=yes
+
+  handlers:
+  - name: reload puma
+    systemd: name=puma state=restarted
+
+- name: Deploy
+  hosts: app
+  tags: deploy-tag
+
+  tasks:
+
+    - name: Fetch the latest version of application code
+      git:
+        repo: 'https://github.com/express42/reddit.git'
+        dest: /home/rmartsev/reddit
+        version: monolith # <-- Указываем нужную ветку
+      notify: reload puma
+
+    - name: Bundle install
+      bundler:
+        state: present
+        chdir: /home/rmartsev/reddit # <-- В какой директории выполнить команду bundle
+
+  handlers:
+  - name: reload puma
+    become: true
+    systemd: name=puma state=restarted
+```
+
+Проверим корректность плейбука и запустим его
+
+``` bash
+ansible-playbook reddit_app2.yml --tags deploy-tag --check
+ansible-playbook reddit_app2.yml --tags deploy-tag
+```
+
+## Несколько плейбуков
+
+В директории ansible создадим три новых файла:
+
+* app.yml
+* db.yml
+* deploy.yml
+
+Заодно переименуем наши предыдущие плейбуки:
+
+* reddit_app.yml ➡ reddit_app_one_play.yml
+* reddit_app2.yml ➡ reddit_app_multiple_plays.yml
+
+Из файла reddit_app_multiple_plays.yml скопируем сценарий, относящийся к настройке БД, в файл db.yml. При этом, удалим тег определенный в сценарии.
+
+Поскольку мы выносим наши сценарии в отдельные плейбуки, то для запуска нужного нам сценария достаточно будет указать имя плейбука, который его содержит. Значит, тег нам больше не понадобится.
+
+Файл `ansible/db.yml`:
+
+``` yml
+---
+- name: Configure MongoDB
+  hosts: db
+  become: true
+  vars:
+    mongo_bind_ip: 0.0.0.0
+
+  tasks:
+
+    - name: Change mongo config file
+      template:
+        src: templates/mongod.conf.j2
+        dest: /etc/mongod.conf
+        mode: 0644
+      notify: restart mongod
+
+  handlers:
+  - name: restart mongod
+    service: name=mongod state=restarted
+```
+
+Файл `ansible/app.yml`:
+
+``` yml
+---
+- name: Configure App
+  hosts: app
+  tags: app-tag
+  become: true
+  vars:
+    db_host: 10.132.0.50
+  
+  tasks:
+
+    - name: Add unit file for Puma
+      copy:
+        src: files/puma.service
+        dest: /etc/systemd/system/puma.service
+      notify: reload puma
+
+    - name: Add config for DB connection
+      template:
+        src: templates/db_config.j2
+        dest: /home/rmartsev/db_config
+        owner: rmartsev
+        group: rmartsev
+
+    - name: enable puma
+      systemd: name=puma enabled=yes
+
+  handlers:
+  - name: reload puma
+    systemd: name=puma state=restarted
+```
+
+Файл `ansible/deploy.yml`:
+
+``` yml
+---
+- name: Deploy
+  hosts: app
+  tags: deploy-tag
+
+  tasks:
+
+    - name: Fetch the latest version of application code
+      git:
+        repo: 'https://github.com/express42/reddit.git'
+        dest: /home/rmartsev/reddit
+        version: monolith # <-- Указываем нужную ветку
+      notify: reload puma
+
+    - name: Bundle install
+      bundler:
+        state: present
+        chdir: /home/rmartsev/reddit # <-- В какой директории выполнить команду bundle
+
+  handlers:
+  - name: reload puma
+    become: true
+    systemd: name=puma state=restarted
+```
+
+Создадим файл site.yml в директории ansible, в котором опишем управление конфигурацией всей нашей инфраструктуры. Это будет нашим главным плейбуком, который будет включать в себя все остальные:
+
+Файл `ansible/site.yml`:
+
+``` yml
+---
+- import_playbook: db.yml
+- import_playbook: app.yml
+- import_playbook: deploy.yml
+```
+
+### Проверка результата
+
+Для чистоты проверки наших плейбуков пересоздадим инфраструктуру окружения stage, используя команды: 
+
+``` bash
+terraform destroy
+terraform apply -auto-approve=false
+```
+
+и проверим работу плейбуков:
+
+``` bash
+ansible-playbook site.yml --check
+ansible-playbook site.yml
+```
+
+Перед проверкой не забудьте изменить внешние IP-адреса инстансов в инвентори файле ansible/inventory и переменную db_host в плейбуке app.yml:
