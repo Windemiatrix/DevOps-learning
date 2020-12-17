@@ -1664,3 +1664,438 @@ ansible-playbook site.yml
 ```
 
 Перед проверкой не забудьте изменить внешние IP-адреса инстансов в инвентори файле ansible/inventory и переменную db_host в плейбуке app.yml:
+
+# Ansible 3
+
+В директории `ansible` создадим роли для приложения и базы данных:
+
+``` bash
+cd ansible 
+mkdir roles
+cd roles 
+ansible-galaxy init app
+ansible-galaxy init db
+```
+
+Структура создаваемой роли:
+
+``` bash
+tree db
+db
+├── README.md
+├── defaults          # <-- Директория для переменных по умолчанию
+│   └── main.yml
+├── files
+├── handlers
+│   └── main.yml
+├── meta              # <-- Информация о роли, создателе и зависимостях
+│   └── main.yml
+├── tasks             # <-- Директория для тасков
+│   └── main.yml
+├── templates
+├── tests
+│   ├── inventory
+│   └── test.yml
+└── vars              # <-- Директория для переменных, которые не должны
+    └── main.yml      #     переопределяться пользователем
+
+8 directories, 8 files
+```
+
+Перенесем из файлов `ansible/app/yml` и `ansible/db.yml` в созданные директории ролей и отредактирует:
+
+Файл `ansible/roles/db/tasks/main.yml`:
+
+``` yml
+---
+# tasks file for db
+
+- name: Change mongo config file
+  template:
+    src: mongod.conf.j2
+    dest: /etc/mongod.conf
+    mode: 0644
+  notify: restart mongod
+```
+
+Файл `ansible/roles/db/handlers/main.yml`:
+
+``` yml
+---
+# handlers file for db
+
+- name: restart mongod
+  service: name=mongod state=restarted
+```
+
+Файл `ansible/roles/db/defaults/main.yml`:
+
+``` yml
+---
+# defaults file for db
+
+mongo_port: 27017
+mongo_bind_ip: 127.0.0.1
+```
+
+Файл `ansible/roles/app/tasks/main.yml`:
+
+``` yml
+---
+# tasks file for app
+
+- name: Add unit file for Puma
+  copy:
+    src: files/puma.service
+    dest: /etc/systemd/system/puma.service
+  notify: reload puma
+
+- name: Add config for DB connection
+  template:
+    src: templates/db_config.j2
+    dest: /home/rmartsev/db_config
+    owner: rmartsev
+    group: rmartsev
+  notify: reload puma
+
+- name: enable puma
+  systemd: name=puma enabled=yes
+```
+
+Файл `ansible/roles/app/handlers/main.yml`:
+
+``` yml
+---
+# handlers file for app
+- name: reload puma
+  systemd: 
+    name: puma 
+    state: restarted
+    daemon_reload: yes
+```
+
+Файл `ansible/roles/app/defaults/main.yml`:
+
+``` yml
+---
+# defaults file for app
+
+db_host: 127.0.0.1
+```
+
+Скопируем файлы:
+
+`ansible/templates/mongod.conf.j2` -> `ansible/roles/db/templates/mongod.conf.j2` /
+`ansible/templates/db_config.j2` -> `ansible/roles/app/templates/db_config.j2` /
+`ansible/files/puma.service` -> `ansible/roles/app/files/puma.service`
+
+Удалим определение тасков и хендреров в плейбуках `ansible/app.yml` и `ansible/db.yml`:
+
+Файл `ansible/app.yml`:
+
+``` yml
+---
+- name: Configure App
+  hosts: app
+  become: true
+
+  vars:
+    db_host: 10.132.0.60
+  
+  roles:
+
+    - app
+```
+
+Файл `ansible/db.yml`:
+
+``` yml
+---
+- name: Configure MongoDB
+  hosts: db
+  become: true
+
+  vars:
+    mongo_bind_ip: 0.0.0.0
+
+  roles:
+
+    - db
+```
+
+Проверим корректность составления плейбука
+
+``` bash
+$ ansible-playbook site.yml --check
+
+PLAY [Configure MongoDB] *****************************************************************************************
+
+TASK [Gathering Facts] *******************************************************************************************
+ok: [dbserver]
+
+TASK [db : Change mongo config file] *****************************************************************************
+changed: [dbserver]
+
+RUNNING HANDLER [db : restart mongod] ****************************************************************************
+changed: [dbserver]
+
+PLAY [Configure App] *********************************************************************************************
+
+TASK [Gathering Facts] *******************************************************************************************
+ok: [appserver]
+
+TASK [app : Add unit file for Puma] ******************************************************************************
+changed: [appserver]
+
+TASK [app : Add config for DB connection] ************************************************************************
+changed: [appserver]
+
+TASK [app : enable puma] *****************************************************************************************
+ok: [appserver]
+
+RUNNING HANDLER [app : reload puma] ******************************************************************************
+changed: [appserver]
+
+PLAY [Deploy] ****************************************************************************************************
+
+TASK [Gathering Facts] *******************************************************************************************
+ok: [appserver]
+
+TASK [Fetch the latest version of application code] **************************************************************
+ok: [appserver]
+
+TASK [Bundle install] ********************************************************************************************
+ok: [appserver]
+
+PLAY RECAP *******************************************************************************************************
+appserver                  : ok=8    changed=3    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+dbserver                   : ok=3    changed=2    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0   
+```
+
+И выполним его
+
+``` bash
+ansible-playbook site.yml
+```
+
+Проверим подключение к app через браузер - все работает корректно.
+
+Скопируем файл `ansible/inventory` в каталоги `ansible/environtents/prod` и `ansible/environtents/stage`, исходный файл удалим.
+
+Теперь для запуска плейбука необходимо выполнить команду:
+
+``` bash
+ansible-playbook -i environments/prod/inventory deploy.yml
+```
+
+Определим окружение по умолчанию в конфигурации ansible `ansible/ansible.cfg`:
+
+``` ini
+[defaults]
+inventory = ./environments/stage/inventory
+remote_user = rmartsev
+private_key_file = ~/.ssh/rmartsev_rsa
+host_key_checking = False
+retry_files_enabled = False
+ansible_python_interpreter=auto
+interpreter_python=auto
+```
+
+Создадим директорию `group_vars` в директориях наших окружений `environments/prod` и `environments/stage`
+
+Зададим настройки окружения stage, используя групповые переменные:
+
+1. Создадим файлы `stage/group_vars/app` для определения переменных для группы хостов app, описанных в инвентори файле `stage/inventory`.
+2. Скопируем в этот файл переменные, определенные в плейбуке `ansible/app.yml`.
+3. Также удалим определение переменных из самого плейбука `ansible/app.yml`.
+4. Создадим файлы `stage/group_vars/db` для определения переменных для группы хостов app, описанных в инвентори файле `stage/inventory`.
+5. Скопируем в этот файл переменные, определенные в плейбуке `ansible/db.yml`.
+6. Также удалим определение переменных из самого плейбука `ansible/db.yml`.
+7. Создадим файл `ansible/environments/stage/group_vars/all` со следующим содержимым:
+
+``` ini
+env: stage
+```
+
+Конфигурация окружения prod будет идентичной, за исключением переменной env, определенной для группы all. Скопируем файлы переменных из окружения stage в prod и изменим значение переменной `env` на `prod`.
+
+Для хостов из каждого окружения мы определили переменную `env`, которая содержит название окружения. Теперь настроим вывод информации об окружении, с которым мы работаем, при применении плейбуков. Определим переменную по умолчанию `env` в используемых ролях...
+
+Для роли app в файле `ansible/roles/app/defaults/main.yml`:
+
+``` ini
+# defaults file for app
+db_host: 127.0.0.1
+env: local
+```
+
+Для роли db в файле `ansible/roles/db/defaults/main.yml`:
+
+``` ini
+# defaults file for db
+mongo_port: 27017
+mongo_bind_ip: 127.0.0.1
+env: local
+```
+
+Будем выводить информацию о том, в каком окружении находится конфигурируемый хост. Воспользуемся модулем debug для вывода значения переменной. Добавим следующий таск в начало наших ролей.
+
+Для роли app (файл `ansible/roles/app/tasks/main.yml`):
+
+``` yml
+# tasks file for app
+- name: Show info about the env this host belongs to
+  debug:
+    msg: "This host is in {{ env }} environment!!!"
+```
+
+Добавим такой же таск в роль db.
+
+Улучшим наш ansible.cfg. Для этого приведем его к такому виду:
+
+``` ini
+[defaults]
+inventory = ./environments/stage/inventory
+remote_user = rmartsev
+private_key_file = ~/.ssh/rmartsev_rsa
+host_key_checking = False
+retry_files_enabled = False
+ansible_python_interpreter=auto
+interpreter_python=auto
+# Отключим проверку SSH Host-keys (поскольку они всегда разные для новых инстансов)
+host_key_checking = False
+# Отключим создание *.retry-файлов (они нечасто нужны, но мешаются под руками)
+retry_files_enabled = False
+# # Явно укажем расположение ролей (можно задать несколько путей через ; )
+roles_path = ./roles
+
+[diff]
+# Включим обязательный вывод diff при наличии изменений и вывод 5 строк контекста
+always = True
+context = 5
+```
+
+Для проверки пересоздадим инфраструктуру окружения stage, используя команды:
+
+``` bash
+terraform destroy
+terraform apply -auto-approve=false
+```
+
+Если все сделано правильно, то получим примерно такой вывод команды ansible-playbook:
+
+``` bash
+ansible-playbook playbooks/site.yml --check
+ansible-playbook playbooks/site.yml
+```
+
+Используем роль jdauphant.nginx и настроим обратное проксирование для нашего приложения с помощью nginx.
+
+Хорошей практикой является разделение зависимостей ролей (`requirements.yml`) по окружениям.
+
+1. Создадим файлы `environments/stage/requirements.yml` и `environments/prod/requirements.yml`
+2. Добавим в них запись вида:
+
+``` yml
+- src: jdauphant.nginx
+  version: v2.21.1
+```
+
+3. Установим роль:
+
+``` bash
+ansible-galaxy install -r environments/stage/requirements.yml
+```
+
+4. Комьюнити-роли не стоит коммитить в свой репозиторий, для этого добавим в .gitignore запись: jdauphant.nginx
+
+Добавим эти переменные в `stage/group_vars/app` и `prod/group_vars/app`:
+
+``` ini
+db_host: 10.132.15.194
+nginx_sites:
+    default:
+        - listen 80
+        - server_name "reddit"
+        - location / {
+                proxy_pass http://127.0.0.1:9292;
+            }
+```
+
+Самостоятельное задание
+
+1. Добавьте в конфигурацию Terraform открытие 80 порта для инстанса приложения.
+2. Добавьте вызов роли jdauphant.nginx в плейбук app.yml.
+3. Примените плейбук site.yml для окружения stage и проверьте, что приложение теперь доступно на 80 порту.
+
+Подготовим плейбук для создания пользователей, пароль пользователей будем хранить в зашифрованном виде в файле `credentials.yml`
+
+1. Создайте файл vault.key со произвольной строкой ключа
+2. Изменим файл ansible.cfg, добавим опцию vault_password_file в секцию [defaults]
+
+``` ini
+[defaults]
+...
+vault_password_file = vault.key
+```
+
+Добавим в `.gitignore` файл `vault.key`
+
+Добавим плейбук для создания пользователей - файл `ansible/playbooks/users.yml`
+
+``` yml
+---
+- name: Create users
+  hosts: all
+  become: true
+
+  vars_files:
+    - "{{ inventory_dir }}/credentials.yml"
+
+  tasks:
+    - name: create users
+      user:
+        name: "{{ item.key }}"
+        password: "{{ item.value.password|password_hash('sha512', 65534|random(seed=inventory_hostname)|string) }}"
+        groups: "{{ item.value.groups | default(omit) }}"
+      with_dict: "{{ credentials.users }}"
+```
+
+Создадим файл с данными пользователей для каждого окружения.
+
+Файл для prod (ansible/environments/prod/credentials.yml):
+
+``` ini
+credentials:
+  users:
+    admin:
+      password: admin123
+      groups: sudo
+```
+
+Файл для stage (ansible/environments/stage/credentials.yml):
+
+``` ini
+credentials:
+  users:
+    admin:
+      password: qwerty123
+      groups: sudo
+    qauser:
+      password: test123
+```
+
+1. Зашифруем файлы используя vault.key (используем одинаковый для всех окружений):
+
+``` bash
+ansible-vault encrypt environments/prod/credentials.yml
+ansible-vault encrypt environments/stage/credentials.yml
+```
+
+2. Проверьте содержимое файлов, убедитесь что они зашифрованы
+3. Добавьте вызов плейбука в файл site.yml и выполните его для stage окружения:
+
+``` bash
+ansible-playbook site.yml —check
+ansible-playbook site.yml
+```
