@@ -2099,3 +2099,152 @@ ansible-vault encrypt environments/stage/credentials.yml
 ansible-playbook site.yml —check
 ansible-playbook site.yml
 ```
+
+# Ansible 4
+
+Для данной лабораторной работы необходимо установить Vagrant и VirtualBox.
+
+Отредактирует файл `.gitignore`, добавив в него исключения, чтобы не комитить информацию о создаваемых Vagrant машинах и логах:
+
+``` ini
+... <- предыдущие записи
+# Vagrant & molecule
+.vagrant/
+*.log
+*.pyc
+.molecule
+.cache
+.pytest_cache
+```
+
+В директории ansible создадим файл Vagrantfile с определением двух VM:
+
+``` vagrant
+Vagrant.configure("2") do |config|
+
+  config.vm.provider :virtualbox do |v|
+    v.memory = 512
+  end
+
+  config.vm.define "dbserver" do |db|
+    db.vm.box = "ubuntu/xenial64"
+    db.vm.hostname = "dbserver"
+    db.vm.network :private_network, ip: "10.10.10.10"
+  end
+  
+  config.vm.define "appserver" do |app|
+    app.vm.box = "ubuntu/xenial64"
+    app.vm.hostname = "appserver"
+    app.vm.network :private_network, ip: "10.10.10.20"
+  end
+end
+```
+
+где `v.memory` - объек оперативной памяти, `db.vm.box` - название бокса (образа VM), `db.vm.hostname` - имя VM, `app.vm.network :private_network, ip` - имя внутреннего интерфейса.
+
+Создадим виртуалки, описанные в Vagrantfile. Выполните следующую команду, в директории ansible, где находится Vagrantfile:
+
+``` bash
+vagrant up
+```
+
+Проверим, что бокс скачался на нашу локальную машину:
+
+``` bash
+$ vagrant box list
+ubuntu/xenial64 (virtualbox, 20201210.0.0)
+```
+
+Проверим статус VMs:
+
+``` bash
+$ vagrant status
+Current machine states:
+
+dbserver                  running (virtualbox)
+appserver                 running (virtualbox)
+
+This environment represents multiple VMs. The VMs are all listed
+above with their current state. For more information about a specific
+VM, run `vagrant status NAME`.
+```
+
+Проверим SSH доступ к VM с названием appserver и проверим пинг хоста `dbserver` по адресу, который мы указали в Vagrantfile
+
+``` bash
+$ vagrant ssh appserver
+Welcome to Ubuntu 16.04.7 LTS (GNU/Linux 4.4.0-197-generic x86_64)
+
+ * Documentation:  https://help.ubuntu.com
+ * Management:     https://landscape.canonical.com
+ * Support:        https://ubuntu.com/advantage
+
+0 packages can be updated.
+0 updates are security updates.
+
+New release '18.04.5 LTS' available.
+Run 'do-release-upgrade' to upgrade to it.
+
+vagrant@appserver:~$  ping -c 2 10.10.10.10
+PING 10.10.10.10 (10.10.10.10) 56(84) bytes of data.
+64 bytes from 10.10.10.10: icmp_seq=1 ttl=64 time=2.91 ms
+64 bytes from 10.10.10.10: icmp_seq=2 ttl=64 time=1.02 ms
+
+--- 10.10.10.10 ping statistics ---
+2 packets transmitted, 2 received, 0% packet loss, time 1002ms
+rtt min/avg/max/mdev = 1.027/1.971/2.916/0.945 ms
+vagrant@appserver:~$ logout
+Connection to 127.0.0.1 closed.
+```
+
+Vagrant поддерживает большое количество провижинеров, которые позволяют автоматизировать процесс конфигурации созданных VMs с использованием популярных инструментов управления конфигурацией и обычных скриптов на bash.
+
+Мы будем использовать Ansible провижинер для проверки работы наших ролей и плейбуков.
+
+Начнем с доработки `db` роли. Добавим провижининг в определение хоста `dbserver`. Добавим в файл `ansible/vagrantfile` строчки:
+
+``` vagrantfile
+  config.vm.define "dbserver" do |db|
+...
+    db.vm.provision "ansible" do |ansible|
+      ansible.playbook = "playbooks/site.yml"
+      ansible.groups = {
+      "db" => ["dbserver"],
+      "db:vars" => {"mongo_bind_ip" => "0.0.0.0"}
+      }
+    end
+...
+  end
+```
+
+где `db.vm.provision "ansible" do |ansible|` - определение провижинера, `ansible.playbook` - запускаемый плейбук, `ansible.groups` - определение группы хостув и переменных.
+
+Провижининг происходит автоматически при запуске новой машины. Если же мы хотим применить провижининг на уже запущенной машине, то необходимо использовать команду provision.
+
+Если мы хотим применить команду для конкретного хоста, то нам также нужно передать его имя в качестве аргумента.
+
+``` bash
+$ vagrant provision dbserver
+==> dbserver: Running provisioner: ansible...
+    dbserver: Running ansible-playbook...
+[WARNING]: While constructing a mapping from
+/Users/rmartsev/Documents/DevOps/DevOps-
+learning/ansible/roles/jdauphant.nginx/tasks/configuration.yml, line 62, column
+3, found a duplicate dict key (when). Using last defined value only.
+
+PLAY [Configure MongoDB] *******************************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [dbserver]
+
+TASK [db : Show info about the env this host belongs to] ***********************
+fatal: [dbserver]: FAILED! => {"msg": "The task includes an option with an undefined variable. The error was: 'env' is undefined\n\nThe error appears to be in '/Users/rmartsev/Documents/DevOps/DevOps-learning/ansible/roles/db/tasks/main.yml': line 4, column 3, but may\nbe elsewhere in the file depending on the exact syntax problem.\n\nThe offending line appears to be:\n\n\n- name: Show info about the env this host belongs to\n  ^ here\n"}
+
+PLAY RECAP *********************************************************************
+dbserver                   : ok=1    changed=0    unreachable=0    failed=1    skipped=0    rescued=0    ignored=0   
+
+Ansible failed to complete successfully. Any error output should be
+visible above. Please fix these errors and try again.
+```
+
+Провижининг завершился с ошибкой.
