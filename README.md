@@ -2099,3 +2099,326 @@ ansible-vault encrypt environments/stage/credentials.yml
 ansible-playbook site.yml —check
 ansible-playbook site.yml
 ```
+
+# Docker
+
+Запустим первый контейнер после установки `Docker`:
+
+``` bash
+$ docker run hello-world 
+Unable to find image 'hello-world:latest' locally
+latest: Pulling from library/hello-world
+0e03bdcc26d7: Pull complete 
+Digest: sha256:1a523af650137b8accdaed439c17d684df61ee4d74feac151b5b337bd29e7eec
+Status: Downloaded newer image for hello-world:latest
+
+Hello from Docker!
+This message shows that your installation appears to be working correctly.
+<skip>
+```
+
+Полезные команды:
+
+1. `docker ps` - список запушенных контейнеров.
+2. `docker ps -a` - список всех контейнеров.
+3. `docker images` - список сохраненных образов.
+4. `docker run` - создает и запускает контейнер из image (eg. docker run -it ubuntu:16.04 /bin/bash). При каждом запуске создается новый контейнер. Если не указывать флаг `--rm` при запуске `docker run`, то после остановки контейнер вместе с содержимым остается на диске. `docker run` = `docker create` + `docker start` + `docker attach`.
+5. `docker create` - создает контейнер, используется, когда не нужно стартовать контейнер сразу.
+6. `docker start <u_container_id>` - запускает контейнер.
+7. `docker attach <u_container_id>` - присоединяет терминал к запущенному контейнеру.
+8. `docker exec` - запускает новый процесс внутри контейнера.
+9. `docker commit` - создает image из контейнера; контейнер остается запущенным.
+10. `docker system df` - отображение дискового пространства, занятого образами, контейнерами и volume’ами.
+11. `docker rm` -  удаляет контейнер, можно добавить флаг -f, чтобы удалялся работающий container(будет послан sigkill).
+12. `socker rmi` - удаляет image, если от него не зависят запущенные контейнеры.
+
+* Через параметры передаются лимиты(cpu/mem/disk), ip, volumes
+* -i – запускает контейнер в foreground режиме (docker attach)
+* -d – запускает контейнер в background режиме
+* -t создает TTY
+
+Создадим два контейнера:
+
+``` bash
+docker run -it ubuntu:16.04 /bin/bash 
+echo 'Hello world!' > /tmp/file
+exit
+```
+
+``` bash
+$ docker run -it ubuntu:16.04 /bin/bash
+$ cat /tmp/file
+cat: /tmp/file: No such file or directory
+$ exit
+```
+
+Найдем ранее созданный контейнер в котором мы создали `/tmp/file`:
+
+``` bash
+$ docker ps -a --format "table {{.ID}}\t{{.Image}}\t{{.CreatedAt}}\t{{.Names}}"  
+CONTAINER ID   IMAGE          CREATED AT                      NAMES
+227696ce103d   ubuntu:16.04   2021-01-10 11:41:09 +0300 MSK   wonderful_pike
+ecb44f1b9d02   ubuntu:16.04   2021-01-10 11:39:48 +0300 MSK   suspicious_fermat
+22ba602cfbba   hello-world    2021-01-10 11:30:12 +0300 MSK   zealous_shaw
+```
+
+Запустим предпоследний контейнер из образа ubuntu:16.04, подключимся к нему и выведем на экран содержимое файла `/tmp/file`:
+
+``` bash
+$ docker start ecb44f1b9d02
+$ docker attach ecb44f1b9d02
+<ENTER>
+$ cat /tmp/file
+Hello world!
+$ exit
+```
+
+Удалим все контейнеры:
+
+``` bash
+$ docker rm $(docker ps -a -q)
+227696ce103d
+ecb44f1b9d02
+22ba602cfbba
+```
+
+Удалим все образы:
+
+``` bash
+$ docker rmi $(docker images -q)
+Untagged: yourname/ubuntu-tmp-file:latest
+Deleted: sha256:a99c1eb62561e8acca5f96b3d6ce4c3d3eff6c53715bcad24a5a3e6015df2a43
+Deleted: sha256:215c89cc569b2f33a222fe9c608bebb2c05091a9b36cf6a25380d82d89c3cf06
+Untagged: ubuntu:16.04
+Untagged: ubuntu@sha256:3355b6e4ba1b12071ba5fe9742042a2f10b257c908fbdfac81912a16eb463879
+Deleted: sha256:9499db7817713c4d10240ca9f5386b605ecff7975179f5a46e7ffd59fff462ee
+Deleted: sha256:f40485a002f52daa539c4ebf3a9805d74a0396eacb48d09f3774b2c9865a43db
+Deleted: sha256:4c823febe808dcc9c69e7b99a91796fcf125fdde4aac206c9eac13fcfd4ffba3
+Deleted: sha256:ea2e76a9d2f2be4a60d0872a63775f03f9510d7a0aa6bdc68a936e9a7b7b995a
+Deleted: sha256:da2785b7bb163ff867008430c06b6c02d3ffc16fcee57ef38822861af85989ea
+Untagged: hello-world:latest
+Untagged: hello-world@sha256:1a523af650137b8accdaed439c17d684df61ee4d74feac151b5b337bd29e7eec
+Deleted: sha256:bf756fb1ae65adf866bd8c456593cd24beb6a0a061dedf42b26a993176745f6b
+Deleted: sha256:9c27e219663c25e0f28493790cc0b88bc973ba3b1686355f221c38a36978ac63
+```
+
+Установим docker-machine: `https://docs.docker.com/machine/install-machine/`
+
+``` bash
+$ docker-machine -v                                                  
+docker-machine version 0.16.0, build 702c267f
+```
+
+Создадим хост с докер:
+
+``` bash
+$ export GOOGLE_PROJECT=docker-301310
+$ docker-machine create --driver google \
+ --google-machine-image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/family/ubuntu-2004-lts \
+ --google-machine-type n1-standard-1 \
+ --google-zone europe-west1-b \
+ docker-host
+Running pre-create checks...
+(docker-host) Check that the project exists
+(docker-host) Check if the instance already exists
+Creating machine...
+(docker-host) Generating SSH Key
+(docker-host) Creating host...
+(docker-host) Opening firewall ports
+(docker-host) Creating instance
+(docker-host) Waiting for Instance
+(docker-host) Uploading SSH Key
+Waiting for machine to be running, this may take a few minutes...
+Detecting operating system of created instance...
+Waiting for SSH to be available...
+Detecting the provisioner...
+Provisioning with ubuntu(systemd)...
+Installing Docker...
+Copying certs to the local machine directory...
+Copying certs to the remote machine...
+Setting Docker configuration on the remote daemon...
+Checking connection to Docker...
+Docker is up and running!
+To see how to connect your Docker Client to the Docker Engine running on this virtual machine, run: docker-machine env docker-host
+$ docker-machine ls                      
+NAME          ACTIVE   DRIVER   STATE     URL                        SWARM   DOCKER     ERRORS
+docker-host   -        google   Running   tcp://130.211.99.56:2376           v20.10.2   
+$ eval $(docker-machine env docker-host)
+```
+
+Создадим 4 файла:
+
+* Dockerfile - текстовое описание нашего образа
+* mongod.conf - подготовленный конфиг для mongodb
+* db_config - содержит переменную окружения со ссылкой на mongodb
+* start.sh - скрипт запуска приложения
+
+Файл `mongod.conf`:
+
+``` conf
+# Where and how to store data.
+storage:
+  dbPath: /var/lib/mongodb
+  journal:
+    enabled: true
+
+# where to write logging data.
+systemLog:
+  destination: file
+  logAppend: true
+  path: /var/log/mongodb/mongod.log
+
+# network interfaces
+net:
+  port: 27017
+  bindIp: 127.0.0.1
+```
+
+Файл `start.sh`
+
+``` sh
+#!/bin/bash
+
+/usr/bin/mongod --fork --logpath /var/log/mongod.log --config /etc/mongodb.conf
+
+source /reddit/db_config
+
+cd /reddit && puma || exit
+```
+
+Файл `db_config`:
+
+``` ini
+DATABASE_URL=127.0.0.1
+```
+
+Начнем создавать образ с приложением. За основу возьмем известный нам дистрибутив ubuntu версии 16.04
+
+Создадим файл "Dockerfile" и добавим в него строки:
+
+``` Dockerfile
+FROM ubuntu:16.04
+```
+
+Для работы приложения нам нужны mongo и ruby. Обновим кеш репозитория и установим нужные пакеты. Добавим в "Dockerfile" строки:
+
+``` Dockerfile
+RUN apt-get update
+RUN apt-get install -y mongodb-server ruby-full ruby-dev build-essential git
+RUN gem install bundler
+```
+
+Скачаем наше приложение в контейнер:
+
+``` Dockerfile
+RUN git clone -b monolith https://github.com/express42/reddit.git
+```
+
+Скопируем файлы конфигурации в контейнер:
+
+``` Dockerfile
+COPY mongod.conf /etc/mongod.conf
+COPY db_config /reddit/db_config
+COPY start.sh /start.sh
+```
+
+Теперь нам нужно установить зависимости приложения и произвести настройку:
+
+``` Dockerfile
+RUN cd /reddit && bundle install
+RUN chmod 0777 /start.sh
+```
+
+Добавляем старт сервиса при старте контейнера:
+
+``` Dockerfile
+CMD ["/start.sh"]
+```
+
+Теперь мы готовы собрать свой образ
+
+``` bash
+docker build -t reddit:latest .
+```
+
+Посмотрим на все образы (в том числе промежуточные):
+
+``` bash
+$ docker images -a
+REPOSITORY      TAG       IMAGE ID       CREATED              SIZE
+<none>          <none>    5b3f9bf549f5   27 seconds ago       690MB
+reddit          latest    6cb0891308ce   27 seconds ago       690MB
+<none>          <none>    50eef95391dc   28 seconds ago       690MB
+<none>          <none>    69cf32a288a1   40 seconds ago       658MB
+<none>          <none>    208afc1b216e   40 seconds ago       658MB
+<none>          <none>    86c1829e8e3e   40 seconds ago       658MB
+<none>          <none>    9de44cece132   40 seconds ago       658MB
+<none>          <none>    675219976c4c   42 seconds ago       658MB
+<none>          <none>    eeedf0544209   52 seconds ago       655MB
+<none>          <none>    bad32b22df16   About a minute ago   161MB
+ubuntu          16.04     9499db781771   6 weeks ago          131MB
+```
+
+Теперь можно запустить наш контейнер командой:
+
+``` bash
+docker run --name reddit -d --network=host reddit:latest
+```
+
+Проверим результат:
+
+``` bash
+$ docker-machine ls
+NAME          ACTIVE   DRIVER   STATE     URL                        SWARM   DOCKER     ERRORS
+docker-host   *        google   Running   tcp://130.211.99.56:2376           v20.10.2   
+```
+
+Разрешим входящий TCP-трафик на порт 9292 выполнив команду:
+
+``` bash
+$ gcloud compute firewall-rules create reddit-app \
+ --allow tcp:9292 \
+ --target-tags=docker-machine \
+ --description="Allow PUMA connections" \
+ --direction=INGRESS
+ ```
+
+Для проверки откроем в браузере ссылку http://130.211.99.56:9292/
+
+Аутентифицируемся на docker hub для продолжения работы:
+
+``` bash
+$ docker login
+Login with your Docker ID to push and pull images from Docker Hub. If you don't have a Docker ID, head over to https://hub.docker.com to create one.
+Username: windemiatrix
+Password: 
+Login Succeeded
+```
+
+Загрузим наш образ на docker hub для использования в будущем:
+
+``` bash
+$ docker tag reddit:latest windemiatrix/otus-reddit:1.0
+$ docker push windemiatrix/otus-reddit:1.0
+The push refers to repository [docker.io/windemiatrix/otus-reddit]
+726d957787a8: Pushed 
+fe38e14f4895: Pushed 
+c3f808e07aa1: Pushed 
+b7f80a28a07b: Pushed 
+ccb5e3d3fec2: Pushed 
+0f791091e5a4: Pushed 
+7b154bd12e3a: Pushed 
+f16d1ef0d66f: Pushed 
+fb2512f5cfb4: Pushed 
+1a1a19626b20: Mounted from library/ubuntu 
+5b7dc8292d9b: Mounted from library/ubuntu 
+bbc674332e2e: Mounted from library/ubuntu 
+da2785b7bb16: Mounted from library/ubuntu 
+1.0: digest: sha256:6c4efdca3cee9b5b5eabe6066de9e644dbe17119b817e2262ac94497c266a7ed size: 3035
+```
+
+Т.к. теперь наш образ есть в докер хабе, то мы можем запустить его не только в докер хосте в GCP, но и в вашем локальном докере или на другом хосте. Выполним в другой консоли:
+
+``` bash
+$ docker run --name reddit -d -p 9292:9292 windemiatrix/otus-reddit:1.0
+```
