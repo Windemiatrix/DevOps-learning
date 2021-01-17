@@ -2217,6 +2217,7 @@ $ docker-machine create --driver google \
  --google-machine-image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/family/ubuntu-2004-lts \
  --google-machine-type n1-standard-1 \
  --google-zone europe-west1-b \
+ --google-project docker-301310 \
  docker-host
 Running pre-create checks...
 (docker-host) Check that the project exists
@@ -2420,5 +2421,171 @@ da2785b7bb16: Mounted from library/ubuntu
 Т.к. теперь наш образ есть в докер хабе, то мы можем запустить его не только в докер хосте в GCP, но и в вашем локальном докере или на другом хосте. Выполним в другой консоли:
 
 ``` bash
-$ docker run --name reddit -d -p 9292:9292 windemiatrix/otus-reddit:1.0
+docker run --name reddit -d -p 9292:9292 windemiatrix/otus-reddit:1.0
 ```
+
+# Docker-3
+
+Проверим список хостов Docker:
+
+``` bash
+$ docker-machine ls
+NAME          ACTIVE   DRIVER   STATE     URL                         SWARM   DOCKER     ERRORS
+docker-host   -        google   Running   tcp://104.199.71.220:2376           v20.10.2   
+$ eval $(docker-machine env docker-host)
+```
+
+Скопируем каталог, предоставленный в рамках программы обучения OTUS, в корень репозитория и переименуем в `src`
+
+Создадим файл `src/post-py/Dockerfile` со следующим содержимым:
+
+``` Dockerfile
+FROM python:3.6.0-alpine
+WORKDIR /app
+ADD . /app
+RUN pip install --upgrade pip
+RUN apk add --no-cache make build-base
+RUN pip install -r /app/requirements.txt
+ENV POST_DATABASE_HOST post_db
+ENV POST_DATABASE posts
+CMD ["python3", "post_app.py"]
+```
+
+Создадим файл `src/comment/Dockerfile` со следующим содержимым:
+
+``` Dockerfile
+FROM ruby:2.2
+RUN apt-get update -qq && apt-get install -y build-essential
+ENV APP_HOME /app
+RUN mkdir $APP_HOME
+WORKDIR $APP_HOME
+ADD Gemfile* $APP_HOME/
+RUN bundle install
+COPY . $APP_HOME
+ENV COMMENT_DATABASE_HOST comment_db
+ENV COMMENT_DATABASE comments
+CMD ["puma"]
+```
+
+Создадим файл `src/ui/Dockerfile` со следующим содержимым:
+
+``` Dockerfile
+FROM ruby:2.2
+RUN apt-get update -qq && apt-get install -y build-essential
+ENV APP_HOME /app
+RUN mkdir $APP_HOME
+WORKDIR $APP_HOME
+ADD Gemfile* $APP_HOME/
+RUN bundle install
+ADD . $APP_HOME
+ENV POST_SERVICE_HOST post
+ENV POST_SERVICE_PORT 5000
+ENV COMMENT_SERVICE_HOST comment
+ENV COMMENT_SERVICE_PORT 9292
+CMD ["puma"]
+```
+
+Скачаем последний образ MongoDB:
+
+``` bash
+docker pull mongo:latest
+```
+
+Соберем образы с нашими сервисами:
+
+``` bash
+docker build -t windemiatrix/post:1.0 ./post-py
+docker build -t windemiatrix/comment:1.0 ./comment
+docker build -t windemiatrix/ui:1.0 ./ui
+```
+
+Создадим специальную сеть для приложения:
+
+``` bash
+docker network create reddit
+```
+
+Запустим наши контейнеры:
+
+``` bash
+docker run -d --network=reddit --network-alias=post_db --network-alias=comment_db mongo:latest
+docker run -d --network=reddit --network-alias=post windemiatrix/post:1.0
+docker run -d --network=reddit --network-alias=comment windemiatrix/comment:1.0
+docker run -d --network=reddit -p 9292:9292 windemiatrix/ui:1.0
+```
+
+Посмотрим размер созданных образов:
+
+``` bash
+docker images
+REPOSITORY             TAG            IMAGE ID       CREATED         SIZE
+windemiatrix/ui        1.0            dbda66e67943   2 minutes ago   770MB
+windemiatrix/comment   1.0            3b09bb97715f   2 minutes ago   768MB
+windemiatrix/post      1.0            b0d4150e0472   3 minutes ago   265MB
+mongo                  latest         c97feb3412a3   7 days ago      493MB
+ruby                   2.2            6c8e6f9667b2   2 years ago     715MB
+python                 3.6.0-alpine   cb178ebbf0f2   3 years ago     88.6MB
+```
+
+Оптимизируем Dickerfile для UI:
+
+``` Dockerfile
+FROM ubuntu:16.04
+RUN apt-get update \
+    && apt-get install -y ruby-full ruby-dev build-essential \
+    && gem install bundler --no-ri --no-rdoc
+
+ENV APP_HOME /app
+RUN mkdir $APP_HOME
+
+WORKDIR $APP_HOME
+ADD Gemfile* $APP_HOME/
+RUN bundle install
+ADD . $APP_HOME
+
+ENV POST_SERVICE_HOST post
+ENV POST_SERVICE_PORT 5000
+ENV COMMENT_SERVICE_HOST comment
+ENV COMMENT_SERVICE_PORT 9292
+
+CMD ["puma"]
+```
+
+Перемоберем UI:
+
+``` bash
+docker build -t windemiatrix/ui:2.0 ./ui
+```
+
+Выключим старые версии контейнеров:
+
+``` bash
+docker kill $(docker ps -q)
+```
+
+Запустим новые версии контейнеров:
+
+``` bash
+docker run -d --network=reddit --network-alias=post_db --network-alias=comment_db mongo:latest
+docker run -d --network=reddit --network-alias=post windemiatrix/post:1.0
+docker run -d --network=reddit --network-alias=comment windemiatrix/comment:1.0
+docker run -d --network=reddit -p 9292:9292 windemiatrix/ui:2.0
+```
+
+Все данные пропали. Для сохранения данных создадим Docker volume:
+
+``` bash
+docker volume create reddit_db
+```
+
+И подключим его к контейнеру MongoDB
+
+``` bash
+docker kill $(docker ps -q)
+docker run -d --network=reddit --network-alias=post_db --network-alias=comment_db -v reddit_db:/data/db mongo:latest
+docker run -d --network=reddit --network-alias=post windemiatrix/post:1.0
+docker run -d --network=reddit --network-alias=comment windemiatrix/comment:1.0
+docker run -d --network=reddit -p 9292:9292 windemiatrix/ui:2.0
+```
+
+Теперь все данные после перезапуска контейнера сохраняются.
