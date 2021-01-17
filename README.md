@@ -2589,3 +2589,325 @@ docker run -d --network=reddit -p 9292:9292 windemiatrix/ui:2.0
 ```
 
 Теперь все данные после перезапуска контейнера сохраняются.
+
+# Docker 4
+
+Создадим докер хост в GCP и подключимся к нему
+
+``` bash
+$ docker-machine create --driver google \
+ --google-machine-image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/family/ubuntu-1604-lts \
+ --google-machine-type n1-standard-1 \
+ --google-zone europe-west1-b \
+ --google-project docker-301310 \
+ docker-host
+...
+$ docker-machine ls
+NAME          ACTIVE   DRIVER   STATE     URL                        SWARM   DOCKER     ERRORS
+docker-host   -        google   Running   tcp://104.155.94.64:2376           v20.10.2   
+$ eval $(docker-machine env docker-host)
+```
+
+Запустим контейнер с использованием none-драйвера.
+В качестве образа используем joffotron/docker-net-tools
+Делаем это для экономии сил и времени, т.к. в его состав уже входят необходимые утилиты для работы с сетью: пакеты bindtools, net-tools и curl.
+Контейнер запустится, выполнить команду `ifconfig` и будет удален (флаг --rm)
+
+``` bash
+$ docker run -ti --rm --network none joffotron/docker-net-tools -c ifconfig
+...
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+```
+
+В результате, видим:
+
+* что внутри контейнера из сетевых интерфейсов существует только loopback.
+* сетевой стек самого контейнера работает (ping localhost), но без возможности контактировать с внешним миром.
+* Значит, можно даже запускать сетевые сервисы внутри такого контейнера, но лишь для локальных экспериментов (тестирование, контейнеры для выполнения разовых задач и т.д.)
+
+Запустим контейнер в сетевом пространстве docker-хоста
+
+``` bash
+$ docker run -ti --rm --network host joffotron/docker-net-tools -c ifconfig
+docker0   Link encap:Ethernet  HWaddr 02:42:AA:E3:5C:4C  
+          inet addr:172.17.0.1  Bcast:172.17.255.255  Mask:255.255.0.0
+          UP BROADCAST MULTICAST  MTU:1500  Metric:1
+          RX packets:0 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:0 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:0 
+          RX bytes:0 (0.0 B)  TX bytes:0 (0.0 B)
+
+ens4      Link encap:Ethernet  HWaddr 42:01:0A:84:00:04  
+          inet addr:10.132.0.4  Bcast:0.0.0.0  Mask:255.255.255.255
+          inet6 addr: fe80::4001:aff:fe84:4%32569/64 Scope:Link
+          UP BROADCAST RUNNING MULTICAST  MTU:1460  Metric:1
+          RX packets:11337 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:5510 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:119448106 (113.9 MiB)  TX bytes:591655 (577.7 KiB)
+
+lo        Link encap:Local Loopback  
+          inet addr:127.0.0.1  Mask:255.0.0.0
+          inet6 addr: ::1%32569/128 Scope:Host
+          UP LOOPBACK RUNNING  MTU:65536  Metric:1
+          RX packets:204 errors:0 dropped:0 overruns:0 frame:0
+          TX packets:204 errors:0 dropped:0 overruns:0 carrier:0
+          collisions:0 txqueuelen:1000 
+          RX bytes:21202 (20.7 KiB)  TX bytes:21202 (20.7 KiB)
+```
+
+Данный контейнер включен в стандартный bridge docker0. Также данный контейнер будет привязан к интерфейсу хоста `docker-host`.
+
+Запустим несколько раз создание контейнера с nginx:
+
+``` bash
+docker run --network host -d nginx
+```
+
+В результате получим один рабочий контейнер, запущенный первым. Все остальные будут со статусом `Exited`:
+
+``` bash
+$ docker ps -a                      
+CONTAINER ID   IMAGE     COMMAND                  CREATED              STATUS                          PORTS     NAMES
+ed803139aec3   nginx     "/docker-entrypoint.…"   13 seconds ago       Exited (1) 10 seconds ago                 practical_cohen
+87fee6c20feb   nginx     "/docker-entrypoint.…"   About a minute ago   Exited (1) About a minute ago             affectionate_elion
+46cd53d6ef66   nginx     "/docker-entrypoint.…"   3 minutes ago        Exited (1) 3 minutes ago                  funny_kilby
+eeda461ef995   nginx     "/docker-entrypoint.…"   3 minutes ago        Exited (1) 3 minutes ago                  elegant_lederberg
+55ad3595540c   nginx     "/docker-entrypoint.…"   3 minutes ago        Up 3 minutes                              modest_kilby
+```
+
+Остановим все запущенные контейнеры:
+
+``` bash
+docker kill $(docker ps -q)
+```
+
+Подключимся к ssh docker-host:
+
+``` bash
+docker-machine ssh docker-host
+```
+
+Выполним на `docker-host` команду:
+
+``` bash
+sudo ln -s /var/run/docker/netns /var/run/netns 
+```
+
+Теперь мы можем просматривать существующие в данный момент net-namespaces с помощью команды:
+
+``` bash
+sudo ip netns
+```
+
+`ip netns exec <namespace> <command>` - позволит выполнять команды в выбранном namespace
+
+Запустим еще раз контейнеры и проверим список net-namespaces:
+
+``` bash
+$ sudo ip netns
+default
+```
+
+Создадим bridge-сеть в docker (флаг --driver указывать не обязательно, т.к. по-умолчанию используется bridge)
+
+``` bash
+docker network create reddit --driver bridge
+```
+
+Запустим наш проект reddit с использованием bridge-сети
+
+``` bash
+docker run -d --network=reddit mongo:latest
+docker run -d --network=reddit windemiatrix/post:1.0
+docker run -d --network=reddit windemiatrix/comment:1.0
+docker run -d --network=reddit -p 9292:9292 windemiatrix/ui:1.0
+```
+
+При просмотре приложения видим ошибку "Can't show blog posts, some problems with the post service. Refresh?".
+
+На самом деле, наши сервисы ссылаются друг на друга по dnsименам, прописанным в ENV-переменных (см Dockerfile). В текущей инсталляции встроенный DNS docker не знает ничего об этих именах.
+
+Решением проблемы будет присвоение контейнерам имен или сетевых алиасов при старте:
+
+* --name `name` (можно задать только 1 имя)
+* --network-alias `alias-name` (можно задать множество алиасов)
+
+Остановим контейнеры и повторим запуск с указанием имен и алиасов для контейнеров
+
+``` bash
+docker kill $(docker ps -q)
+docker run -d --network=reddit --network-alias=post_db --network-alias=comment_db mongo:latest
+docker run -d --network=reddit --network-alias=post windemiatrix/post:1.0
+docker run -d --network=reddit --network-alias=comment windemiatrix/comment:1.0
+docker run -d --network=reddit -p 9292:9292 windemiatrix/ui:1.0
+```
+
+Теперь веб-приложение работает корректно.
+
+Запустим наш проект в 2-х bridge сетях. Так, чтобы сервис ui не имел доступа к базе данных.
+
+* сеть front_net: `ui`, `comment`, `post`;
+* сеть back_net: `comment`, `post`, `db`.
+
+Остановим старые копии контейнеров и создадим docker-сети
+
+``` bash
+docker kill $(docker ps -q)
+docker network create back_net --subnet=10.0.2.0/24
+docker network create front_net --subnet=10.0.1.0/24
+```
+
+Запустим контейнеры
+
+``` bash
+docker run -d --network=front_net -p 9292:9292 --name ui windemiatrix/ui:1.0
+docker run -d --network=back_net --name comment windemiatrix/comment:1.0
+docker run -d --network=back_net --name post windemiatrix/post:1.0
+docker run -d --network=back_net --name mongo_db --network-alias=post_db --network-alias=comment_db mongo:latest
+```
+
+Что пошло не так?
+
+Docker при инициализации контейнера может подключить к нему только 1 сеть. При этом контейнеры из соседних сетей не будут доступны как в DNS, так и для взаимодействия по сети. Поэтому нужно поместить контейнеры post и comment в обе сети. Дополнительные сети подключаются командой:
+
+``` bash
+docker network connect <network> <container>
+```
+
+Подключим контейнеры ко второй сети
+
+``` bash
+docker network connect front_net post
+docker network connect front_net comment
+```
+
+Теперь веб-приложение работает корректно.
+
+Посмотрим как выглядит сетевой стек Linux в текущий момент
+
+``` bash
+$ docker-machine ssh docker-host
+$ sudo apt-get update && sudo apt-get install bridge-utils
+$ sudo docker network ls
+NETWORK ID     NAME        DRIVER    SCOPE
+b3e24c5d2e76   back_net    bridge    local
+582885f8090d   bridge      bridge    local
+e21e795350b0   front_net   bridge    local
+c6d781080887   host        host      local
+9076aa02495c   none        null      local
+36da497a2705   reddit      bridge    local
+$ sudo ifconfig | grep br
+br-36da497a2705 Link encap:Ethernet  HWaddr 02:42:d6:dd:44:57
+br-b3e24c5d2e76 Link encap:Ethernet  HWaddr 02:42:2e:27:75:8d
+br-e21e795350b0 Link encap:Ethernet  HWaddr 02:42:49:71:dc:27
+$ sudo brctl show br-b3e24c5d2e76
+bridge name     bridge id               STP enabled     interfaces
+br-b3e24c5d2e76         8000.02422e27758d       no              veth2eedcae
+                                                        veth38e7e71
+                                                        vethf59b59c
+$ sudo iptables -nL -t nat (флаг -v даст чуть больше инфы)
+Chain PREROUTING (policy ACCEPT)
+target     prot opt source               destination         
+DOCKER     all  --  0.0.0.0/0            0.0.0.0/0            ADDRTYPE match dst-type LOCAL
+
+Chain INPUT (policy ACCEPT)
+target     prot opt source               destination         
+
+Chain OUTPUT (policy ACCEPT)
+target     prot opt source               destination         
+DOCKER     all  --  0.0.0.0/0           !127.0.0.0/8          ADDRTYPE match dst-type LOCAL
+
+Chain POSTROUTING (policy ACCEPT)
+target     prot opt source               destination         
+MASQUERADE  all  --  10.0.1.0/24          0.0.0.0/0           
+MASQUERADE  all  --  10.0.2.0/24          0.0.0.0/0           
+MASQUERADE  all  --  172.18.0.0/16        0.0.0.0/0           
+MASQUERADE  all  --  172.17.0.0/16        0.0.0.0/0           
+MASQUERADE  tcp  --  10.0.1.2             10.0.1.2             tcp dpt:9292
+
+Chain DOCKER (2 references)
+target     prot opt source               destination         
+RETURN     all  --  0.0.0.0/0            0.0.0.0/0           
+RETURN     all  --  0.0.0.0/0            0.0.0.0/0           
+RETURN     all  --  0.0.0.0/0            0.0.0.0/0           
+RETURN     all  --  0.0.0.0/0            0.0.0.0/0           
+DNAT       tcp  --  0.0.0.0/0            0.0.0.0/0            tcp dpt:9292 to:10.0.1.2:9292
+$ udo ps ax | grep docker-proxy
+17502 ?        Sl     0:00 /usr/bin/docker-proxy -proto tcp -host-ip 0.0.0.0 -host-port 9292 -container-ip 10.0.1.2 -container-port 9292
+21141 pts/0    S+     0:00 grep --color=auto docker-proxy
+```
+
+Отображаемые veth-интерфейсы (команда `sudo brctl show br-b3e24c5d2e76`) - это те части виртуальных пар интерфейсов, которые лежат в сетевом пространстве хоста и также отображаются в ifconfig. Вторые их части лежат внутри контейнеров
+
+## Docker compose
+
+В директории с проектом, папка src, из предыдущего домашнего задания создадим файл `docker-compose.yml`
+
+``` yml
+version: '3.3'
+services:
+  post_db:
+    image: mongo:3.2
+    volumes:
+      - post_db:/data/db
+    networks:
+      - reddit
+  ui:
+    build: ./ui
+    image: ${USERNAME}/ui:1.0
+    ports:
+      - 9292:9292/tcp
+    networks:
+      - reddit
+  post:
+    build: ./post-py
+    image: ${USERNAME}/post:1.0
+    networks:
+      - reddit
+  comment:
+    build: ./comment
+    image: ${USERNAME}/comment:1.0
+    networks:
+      - reddit
+
+volumes:
+  post_db:
+
+networks:
+  reddit:
+```
+
+Остановим контейнеры, запущенные на предыдущих шагах
+
+``` bash
+docker kill $(docker ps -q)
+```
+
+Выполним:
+
+``` bash
+$ export USERNAME=windemiatrix
+$ docker-compose up -d
+$ docker-compose ps
+    Name                  Command             State           Ports         
+----------------------------------------------------------------------------
+src_comment_1   puma                          Up                            
+src_post_1      python3 post_app.py           Up                            
+src_post_db_1   docker-entrypoint.sh mongod   Up      27017/tcp             
+src_ui_1        puma                          Up      0.0.0.0:9292->9292/tcp
+```
+
+Веб-приложение работает корректно.
+
+Создадим файл с переменными .env:
+
+``` env
+USERNAME=windemiatrix
+```

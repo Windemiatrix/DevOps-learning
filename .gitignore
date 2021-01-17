@@ -6,3 +6,4 @@
 *.retry
 jdauphant.nginx
 vault.key
+.env
