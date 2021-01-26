@@ -1,0 +1,4 @@
+version: '3.3'
+services:
+  comment:
+    command: 'puma --debug -w 2'
