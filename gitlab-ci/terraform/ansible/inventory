@@ -1,0 +1,6 @@
+[t_public]
+gitlab_public ansible_host=35.241.251.214
+
+
+[t_private]
+gitlab_private ansible_host=10.132.0.17
