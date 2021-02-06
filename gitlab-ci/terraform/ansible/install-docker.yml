@@ -1,0 +1,47 @@
+---
+- hosts: gitlab_public
+  become: true
+
+  tasks:
+
+    - name: Add an Apt signing key, uses whichever key is at the URL
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add docker repository into sources list
+      ansible.builtin.apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable
+        state: present
+
+    - name: install docker
+      package:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose
+          - net-tools
+        state: present
+
+    - name: create directory if they don't exist
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: 0775
+      loop:
+        - /srv/gitlab/config
+        - /srv/gitlab/data
+        - /srv/gitlab/logs
+
+    - name: Create docker-compose file
+      become: true # <-- Выполнить задание от root
+      template:
+        src: templates/docker-compose.yml.j2 # <-- Путь до локального файла-шаблона
+        dest: /srv/gitlab/docker-compose.yml # <-- Путь на удаленном хосте
+        mode: 0644 # <-- Права на файл, которые нужно установить
+
+    - name: Run docker
+      raw: cd /srv/gitlab/ && docker-compose up -d
