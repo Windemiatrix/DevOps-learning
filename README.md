@@ -3356,3 +3356,681 @@ $ docker push $USER_NAME/prometheus
 
 • Удалите виртуалку:
 $ docker-machine rm docker-host
+
+# Мониторинг приложения и инфраструктуры
+
+## План
+
+* Мониторинг Docker контейнеров
+* Визуализация метрик
+* Сбор метрик работы приложения и бизнес метрик
+* Настройка и проверка алертинга
+* Много заданий со ⭐ (необязательных)
+
+## Подготовка окружения
+
+1. Открывать порты в файрволле для новых сервисов нужно самостоятельно по мере их добавления.
+2. Создадим Docker хост в GCE и настроим локальное окружение на работу с ним:
+
+``` bash
+export GOOGLE_PROJECT=docker-301310
+
+# Создать докер хост
+docker-machine create --driver google \
+    --google-machine-image https://www.googleapis.com/compute/v1/projects/ubuntu-os-cloud/global/images/family/ubuntu-1604-lts \
+    --google-machine-type n1-standard-1 \
+    --google-zone europe-west1-b \
+    docker-host
+
+# Настроить докер клиент на удаленный докер демон
+eval $(docker-machine env docker-host)
+
+docker-machine ip docker-host
+```
+
+Разделим файлы Docker Compose:
+
+В данный момент и мониторинг и приложения у нас описаны в одном большом docker-compose.yml. С одной стороны это просто, а с другой - мы смешиваем различные сущности, и сам файл быстро растет.
+
+Оставим описание приложений в `docker-compose.yml`, а мониторинг выделим в отдельный файл `docker-compose-monitoring.yml`.
+
+Для запуска приложений будем как и ранее использовать `docker-compose up -d`, а для мониторинга - `docker-compose -f docker-compose-monitoring.yml up -d`.
+
+## cAdvisor
+
+Мы будем использовать cAdvisor для наблюдения за состоянием наших Docker контейнеров.
+
+cAdvisor собирает информацию о ресурсах потребляемых контейнерами и характеристиках их работы.
+
+Примерами метрик являются:
+
+* процент использования контейнером CPU и памяти, выделенные для его запуска,
+* объем сетевого трафика
+* и др.
+
+cAdvisor также будем запускать в контейнере. Для этого добавим новый сервис в наш компоуз файл мониторинга `docker/docker-compose-monitoring.yml`:
+
+``` yml
+version: '3.3'
+services:
+  cadvisor:
+    image: google/cadvisor:v0.29.0
+    volumes:
+      - '/:/rootfs:ro'
+      - '/var/run:/var/run:rw'
+      - '/sys:/sys:ro'
+      - '/var/lib/docker/:/var/lib/docker:ro'
+    ports:
+      - '8080:8080'
+    networks:
+      back_net:
+        aliases:
+          - cadvisor
+
+networks:
+  back_net:
+```
+
+Поместим данный сервис в одну сеть с Prometheus, чтобы тот мог собирать с него метрики.
+
+Добавим информацию о новом сервисе в конфигурацию Prometheus, чтобы он начал собирать метрики `monitoring/prometheus/prometheus.yml`:
+
+``` yml
+---
+global:
+  scrape_interval: '5s'
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets:
+        - 'localhost:9090'
+
+  - job_name: 'ui'
+    static_configs:
+      - targets:
+        - 'ui:9292'
+
+  - job_name: 'comment'
+    static_configs:
+      - targets:
+        - 'comment:9292'
+
+  - job_name: 'node'
+    static_configs:
+      - targets:
+        - 'node-exporter:9100'
+
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets:
+        - 'cadvisor:8080'
+...
+```
+
+Пересоберем образ Prometheus с обновленной конфигурацией:
+
+``` bash
+cd ./monitoring/prometheus
+export USER_NAME=windemiatrix 
+docker build -t ${USER_NAME}/prometheus .
+cd ../../
+```
+
+## cAdvisor UI
+
+Запустим сервисы:
+
+``` bash
+cd ./docker
+docker-compose up -d
+docker-compose -f docker-compose-monitoring.yml up -d
+cd ../
+```
+
+cAdvisor имеет UI, в котором отображается собираемая о контейнерах информация.
+
+Откроем страницу Web UI по адресу http://35.195.157.109:8080
+
+Не открывается. Скорее всего, у нас не открыты порты. Разумеется, открывать руками мы их не будем. Воспользуемся написанным IaC для `terraform` и автоматизируем работу.
+
+В директорию `docker` добавим две директории: `ansible` и `terraform` для развертывания в облаке виртуальной машины. Описывать конфигурацию не буду. Terraform создает в облаке виртуальную машину, далее в качестве провижинера выступает `ansible`, устанавливающий докер на машину, копирующий файлы проекта в директорию `opt` и запускающий `docker-compose`.
+
+На всякий случай, файл `docker/terraform/main.tf`:
+
+``` terraform
+terraform {
+    # Версия terraform
+    required_version = "0.14.5"
+}
+provider "google" {
+    #ID проекта
+    project = var.project
+
+    region = var.region
+}
+
+resource "google_compute_instance" "docker" {
+    name = "docker"
+    machine_type = "e2-medium"
+    zone = "europe-west1-d"
+    boot_disk {
+        initialize_params {
+            image = var.disk_image
+            size  = "100"
+        }
+    }
+    network_interface {
+        network = "default"
+        access_config {}
+    }
+        metadata = {
+        # Путь до публичного ключа
+        ssh-keys = "rmartsev:${file(var.public_key_path)}"
+    }
+    tags = ["allow-http", "allow-https", "allow-tcp-8080", "allow-tcp-9090", "allow-tcp-9292"]
+}
+
+resource "google_compute_firewall" "firewall_http" {
+    name = "allow-http"
+    # Название сети, в которой действует правило
+    network = "default"
+    # Какой доступ разрешить
+    allow {
+        protocol = "tcp"
+        ports = ["80"]
+    }
+    # Каким адресам разрешаем доступ
+    source_ranges = ["0.0.0.0/0"]
+    # Правило применимо для инстансов с перечисленными тэгами
+    target_tags = ["allow-http"]
+}
+
+resource "google_compute_firewall" "firewall_https" {
+    name = "allow-https"
+    # Название сети, в которой действует правило
+    network = "default"
+    # Какой доступ разрешить
+    allow {
+        protocol = "tcp"
+        ports = ["443"]
+    }
+    # Каким адресам разрешаем доступ
+    source_ranges = ["0.0.0.0/0"]
+    # Правило применимо для инстансов с перечисленными тэгами
+    target_tags = ["allow-https"]
+}
+
+resource "google_compute_firewall" "firewall_tcp_8080" {
+    name = "allow-tcp-8080"
+    # Название сети, в которой действует правило
+    network = "default"
+    # Какой доступ разрешить
+    allow {
+        protocol = "tcp"
+        ports = ["8080"]
+    }
+    # Каким адресам разрешаем доступ
+    source_ranges = ["0.0.0.0/0"]
+    # Правило применимо для инстансов с перечисленными тэгами
+    target_tags = ["allow-tcp-8080"]
+}
+
+resource "google_compute_firewall" "firewall_tcp_9090" {
+    name = "allow-tcp-9090"
+    # Название сети, в которой действует правило
+    network = "default"
+    # Какой доступ разрешить
+    allow {
+        protocol = "tcp"
+        ports = ["9090"]
+    }
+    # Каким адресам разрешаем доступ
+    source_ranges = ["0.0.0.0/0"]
+    # Правило применимо для инстансов с перечисленными тэгами
+    target_tags = ["allow-tcp-9090"]
+}
+
+resource "google_compute_firewall" "firewall_tcp_9292" {
+    name = "allow-tcp-9292"
+    # Название сети, в которой действует правило
+    network = "default"
+    # Какой доступ разрешить
+    allow {
+        protocol = "tcp"
+        ports = ["9292"]
+    }
+    # Каким адресам разрешаем доступ
+    source_ranges = ["0.0.0.0/0"]
+    # Правило применимо для инстансов с перечисленными тэгами
+    target_tags = ["allow-tcp-9292"]
+}
+
+resource "local_file" "AnsibleInventory" {
+    content = templatefile(
+        "../ansible/inventory.tmpl",
+        {
+            docker_public = google_compute_instance.docker.network_interface.0.access_config.0.nat_ip
+            docker_internal = google_compute_instance.docker.network_interface.0.network_ip
+        }
+    )
+    filename = "../ansible/inventory"
+    depends_on = [
+        google_compute_instance.docker
+    ]
+}
+
+resource "null_resource" "example" {
+  provisioner "remote-exec" {
+    connection {
+      host = google_compute_instance.docker.network_interface.0.access_config.0.nat_ip
+      user = "rmartsev"
+      private_key = file(var.private_key_path)
+    }
+
+    inline = ["echo 'connected!'"]
+  }
+
+  provisioner "local-exec" {
+    command = "ansible-playbook ../ansible/install-docker.yml"
+  }
+}
+```
+
+Файл `docker/terraform/output.tf`:
+
+```
+output "gitlab_external-ip" {
+    value = google_compute_instance.docker.network_interface.0.access_config.0.nat_ip
+}
+```
+
+Файл `docker/terraform/varoables.tf`:
+
+``` terraform
+variable project {
+  description = "Project ID"
+}
+variable region {
+  description = "Region"
+  # Значение по умолчанию
+  default = "europe-west1"
+}
+variable public_key_path {
+  # Описание переменной
+  description = "Path to the public key used for ssh access"
+}
+variable private_key_path {
+  # Описание переменной
+  description = "Path to the private key used for ssh access"
+}
+variable disk_image {
+  description = "Disk image"
+}
+```
+
+Файл `docker/terraform/terraform.tfvars`:
+
+``` terraform
+project = "xxx"
+public_key_path = "~/.ssh/id_rsa.pub"
+private_key_path = "~/.ssh/id_rsa"
+disk_image = "ubuntu-minimal-2004-lts"
+```
+
+Файл `docker/ansible/install-docker.yml`:
+
+``` yml
+---
+- hosts: docker_public
+  become: true
+
+  tasks:
+
+    - name: Add an Apt signing key, uses whichever key is at the URL
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add docker repository into sources list
+      ansible.builtin.apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable
+        state: present
+
+    - name: install docker
+      package:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose
+          - net-tools
+          - telnet
+        state: present
+
+    - name: Copy files with prometheus
+      ansible.builtin.copy:
+        directory_mode: 0777
+        src: ../../monitoring/prometheus
+        dest: /opt/
+        mode: 0666
+
+    - name: Run docker with prometheus
+      raw: cd /opt/prometheus && export USER_NAME=windemiatrix && docker build -t ${USER_NAME}/prometheus .
+
+    - name: Copy files with services
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /opt/
+        mode: 0666
+      with_fileglob:
+        - ../docker-compose-monitoring.yml
+        - ../docker-compose.yml
+        - ../.env
+
+    - name: Run the service defined in docker-compose.yml and docker-compose-monitoring.yml files
+      docker_compose:
+        project_src: /opt/
+        files:
+          - docker-compose.yml
+          - docker-compose-monitoring.yml
+        state: present
+```
+
+Файл `docker/ansible/inventory.tmpl`:
+
+```
+[t_public]
+docker_public ansible_host=${docker_public}
+
+[t_private]
+docker_private ansible_host=${docker_internal}
+```
+
+IP адрес поменялся. Откроем страницу Web UI по адресу http://35.195.157.109:8080. Работает. Ура.
+
+На данной странице мы видим всевозможную информацию по контейнерам. 
+
+На странице http://35.195.157.109:8080/metrics отображается информация по собираемым и публикуемым метрикам.
+
+На странице http://35.195.157.109:9090/ проверим, что метрики собираются в `prometheus`.
+
+## Визуализация метрик: Grafana
+
+Используем инструмент Grafana для визуализации данных из Prometheus.
+
+Добавим новый сервис в `docker-compose-monitoring.yml`:
+
+``` yml
+services:
+
+  grafana:
+    image: grafana/grafana:5.0.0
+    volumes:
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=secret
+    depends_on:
+      - prometheus
+    ports:
+      - 3000:3000
+    networks:
+      back_net:
+        aliases:
+          - grafana
+
+volumes:
+  grafana_data:
+```
+
+Также внесем изменения в файл `docker/terragorm/mail.tf`:
+
+```
+...
+resource "google_compute_instance" "docker" {
+    name = "docker"
+    machine_type = "e2-medium"
+    zone = "europe-west1-d"
+    boot_disk {
+        initialize_params {
+            image = var.disk_image
+            size  = "100"
+        }
+    }
+    network_interface {
+        network = "default"
+        access_config {}
+    }
+        metadata = {
+        # Путь до публичного ключа
+        ssh-keys = "rmartsev:${file(var.public_key_path)}"
+    }
+    tags = ["allow-http", "allow-https", "allow-tcp-8080", "allow-tcp-9090", "allow-tcp-9292", "allow-tcp-3000"]
+...
+resource "google_compute_firewall" "firewall_tcp_3000" {
+    name = "allow-tcp-3000"
+    # Название сети, в которой действует правило
+    network = "default"
+    # Какой доступ разрешить
+    allow {
+        protocol = "tcp"
+        ports = ["3000"]
+    }
+    # Каким адресам разрешаем доступ
+    source_ranges = ["0.0.0.0/0"]
+    # Правило применимо для инстансов с перечисленными тэгами
+    target_tags = ["allow-tcp-3000"]
+}
+...
+```
+
+И выполним команды для пересоздания окружения:
+
+``` bash
+terraform destroy
+terraform apply
+```
+
+IP адрес изменился.
+
+Графана доступна по адресу: http://35.195.3.24:3000/.
+
+## Grafana: Добавление источника данных
+
+Нажмем Add data source (Добавить источник данных).
+
+Зададим нужный тип и параметры подключения:
+
+* Name: Prometheus Server
+* Type: Prometheus
+* URL: http://prometheus:9090
+* Access: Proxy
+
+И затем нажмем `Save & test`.
+
+## Импорт дашборда
+
+Перейдем на [сайт Grafana](https://grafana.com/dashboards), где можно найти и скачать большое количество уже созданных официальных и комьюнити дашбордов для визуализации различного типа метрик для разных систем мониторинга и баз данных.
+
+Выберем в качестве источника данных нашу систему мониторинга (Prometheus) и выполним поиск по категории Docker. Затем выберем популярный дашборд (Docker and system monitoring).
+
+Нажмем `Загрузить JSON`. В директории `monitoring` создадим директории `grafana/dashboards`, куда поместим скачанный дашборд. Поменяем название файла дашборда на `DockerMonitoring.json`.
+
+Снова откроем веб-интерфейс Grafana и выберем импорт шаблона (Import). Загрузим скачанный дашборд. При загрузке укажем источник данных для визуализации (Prometheus Server). Должен появиться набор графиков с информацией о состоянии хостовой системы и работе контейнеров.
+
+## Мониторинг работы приложения
+
+В качестве примера метрик приложения в сервис UI добавлены:
+
+* счетчик ui_request_count, который считает каждый приходящий HTTP-запрос (добавляя через лейблы такую информацию как HTTP метод, путь, код возврата, мы уточняем данную метрику)
+* гистограмма ui_request_latency_seconds, которая позволяет отслеживать информацию о времени обработки каждого запроса
+
+В качестве примера метрик приложения в сервис Post добавлены:
+
+* гистограмма post_read_db_seconds, которая позволяет
+* отслеживание информации о времени требуемом для поиска поста в БД
+
+Созданные метрики придадут видимости работы нашего приложения и понимания, в каком состоянии оно сейчас находится.
+
+Например, время обработки HTTP запроса не должно быть большим, поскольку это означает, что пользователю приходится долго ждать между запросами, и это ухудшает его общее впечатление от работы с приложением. Поэтому большое время обработки запроса будет для нас сигналом проблемы.
+
+Отслеживая приходящие HTTP-запросы, мы можем, например, посмотреть, какое количество ответов возвращается с кодом ошибки. Большое количество таких ответов также будет служить для нас сигналом проблемы в работе приложения.
+
+## prometheus.yml
+
+Добавим информацию о post-сервисе в конфигурацию Prometheus, чтобы он начал собирать метрики и с него:
+
+``` yml
+...
+  - job_name: 'post'
+    static_configs:
+      - targets:
+        - 'post:5000'
+...
+```
+
+Пересоберем образ Prometheus с обновленной конфигурацией, для этого выполним:
+
+``` bash
+terraform destroy
+terraform apply
+```
+
+Создадим несоклько постов для метрик: http://35.195.157.109:9292/new
+
+## Создание дашборда в Grafana
+
+Еще раз нажмем Add data source (Добавить источник данных).
+
+Зададим нужный тип и параметры подключения:
+
+* Name: Prometheus Server
+* Type: Prometheus
+* URL: http://prometheus:9090
+* Access: Proxy
+
+Построим графики собираемых метрик приложения. Выберем создать новый дашборд: Снова откроем вебинтерфейс Grafana и выберем создание шаблона (Dashboard).
+
+1. Выбираем "Построить график" (New Panel ➡ Graph)
+2. Жмем один раз на имя графика (Panel Title), затем выбираем Edit:
+
+Построим для начала простой график изменения счетчика HTTP-запросов по времени. Выберем источник данных и в поле запроса введем название метрики.
+
+Далее достаточно нажать мышкой на любое место UI, чтобы убрать курсор из поля запроса, и Grafana выполнит запрос и построит график.
+
+Сохраним дашборд.
+
+Построим график запросов, которые возвращают код ошибки на этом же дашборде. Добавим еще один график на наш дашборд. Переходим в режим правки графика.
+
+В поле запросов запишем выражение для поиска всех http запросов, у которых код возврата начинается либо с 4 либо с 5 (используем регулярное выражения для поиска по лейблу). Будем использовать функцию rate(), чтобы посмотреть не просто значение счетчика за весь период наблюдения, но и скорость увеличения данной величины за промежуток времени (возьмем, к примеру 1-минутный интервал, чтобы график был хорошо видим).
+
+В качестве метрики укажем выражение: `rate(ui_request_count{http_status=~"^[45].*"}[1m])`.
+
+График ничего не покажет, если не было запросов с ошибочным кодом возврата. Для проверки правильности нашего запроса обратимся по несуществующему HTTP пути, например, http://35.195.157.109:9292/nonexistent, чтобы получить код ошибки 404 в ответ на наш запрос.
+
+Проверим график (временной промежуток можно уменьшить для лучшей видимости графика). Данные отображаются. Сохраним график.
+
+Grafana поддерживает версионирование дашбордов, именно поэтому при сохранении нам предлагалось ввести сообщение, поясняющее изменения дашборда. Вы можете посмотреть историю изменений своего
+
+## Самостоятельно
+
+Как вы можете заметить, первый график, который мы сделали просто по ui_request_count не отображает никакой полезной информации, т.к. тип метрики count, и она просто растет. Задание:
+
+Используйте для первого графика (UI http requests) функцию rate аналогично второму графику (Rate of UI HTTP Requests with Error).
+
+Создадим панель с выражением: `rate(ui_request_count[1m])`.
+
+## Гистограмма
+
+Гистограмма представляет собой графический способ представления распределения вероятностей некоторой случайной величины на заданном промежутке значений. Для построения гистограммы берется интервал значений, который может принимать измеряемая величина и разбивается на промежутки (обычно одинаковой величины), данные промежутки помечаются на горизонтальной оси X. Затем над каждым интервалом рисуется прямоугольник, высота которого соответствует числу измерений величины, попадающих в данный интервал.
+
+Простым примером гистограммы может быть распределение оценок за контрольную в классе, где учится 21 ученик. Берем промежуток возможных значений (от 1 до 5) и разбиваем на равные интервалы. Затем на каждом интервале рисуем столбец, высота которого соответсвует частоте появлению данной оценки.
+
+## Histogram метрика
+
+В Prometheus есть тип метрик histogram. Данный тип метрик в качестве своего значение отдает ряд распределения измеряемой величины в заданном интервале значений. Мы используем данный тип метрики для измерения времени обработки HTTP запроса нашим приложением.
+
+Рассмотрим пример гистограммы в Prometheus. Посмотрим информацию по времени обработки запроса приходящих на главную страницу приложения.
+
+`ui_request_latency_seconds_bucket{path="/"}`
+
+Эти значения означают, что запросов с временем обработки <= 0.025s было 3 штуки, а запросов 0.01 <= 0.01s было 7 штук (в этот столбец входят 3 запроса из предыдущего столбца и 4 запроса из промежутка [0.025s; 0.01s], такую гистограмму еще называют кумулятивной). Запросов, которые бы заняли > 0.01s на обработку не было, поэтому величина всех последующих столбцов равна 7.
+
+## Алертинг
+
+### Правила алертинга
+
+Мы определим несколько правил, в которых зададим условия состояний наблюдаемых систем, при которых мы должны получать оповещения, т.к. заданные условия могут привести к недоступности или неправильной работе нашего приложения.
+
+P.S. Стоит заметить, что в самой Grafana тоже есть alerting. Но по функционалу он уступает Alertmanager в Prometheus.
+
+### Alertmanager
+
+Alertmanager - дополнительный компонент для системы мониторинга Prometheus, который отвечает за первичную обработку алертов и дальнейшую отправку оповещений по заданному назначению.
+
+Создайте новую директорию monitoring/alertmanager. В этой директории создайте Dockerfile со следующим содержимым:
+
+``` yml
+FROM prom/alertmanager:v0.14.0
+ADD config.yml /etc/alertmanager/
+```
+
+Настройки Alertmanager-а как и Prometheus задаются через YAML файл или опции командой строки. В директории monitoring/alertmanager создайте файл config.yml, в котором определите отправку нотификаций в ВАШ тестовый слак канал. Для отправки нотификаций в слак канал потребуется создать СВОЙ Incoming Webhook monitoring/alertmanager/config.yml
+
+``` yml
+global:
+  slack_api_url: 'https://hooks.slack.com/services/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'
+
+route:
+  receiver: 'slack-notifications'
+
+receivers:
+- name: 'slack-notifications'
+  slack_configs:
+  - channel: '#devops'
+```
+
+Создадим файл `alerts.yml` в директории prometheus, в котором определим условия при которых должен срабатывать алерт и посылаться Alertmanager-у. Мы создадим простой алерт, который будет срабатывать в ситуации, когда одна из наблюдаемых систем (endpoint) недоступна для сбора метрик (в этом случае метрика up с лейблом instance равным имени данного эндпоинта будет равна нулю). Выполните запрос по имени метрики up в веб интерфейсе Prometheus, чтобы убедиться, что сейчас все эндпоинты доступны для сбора метрик:
+
+``` yml
+groups:
+  - name: alert.rules
+    rules:
+    - alert: InstanceDown
+      expr: up == 0
+      for: 1m
+      labels:
+        severity: page
+      annotations:
+        description: '{{ $labels.instance }} of job {{ $labels.job }} has been down for more than 1 minute'
+        summary: 'Instance {{ $labels.instance }} down'
+```
+
+Добавим операцию копирования данного файла в Dockerfile: `monitoring/prometheus/Dockerfile`
+
+``` dockerfile
+FROM prom/prometheus:v2.1.0
+ADD prometheus.yml /etc/prometheus/
+ADD alerts.yml /etc/prometheus/
+```
+
+Добавим информацию о правилах в конфиг `Prometheus`:
+
+``` yml
+rule_files:
+  - "alerts.yml"
+
+alerting:
+  alertmanagers:
+  - scheme: http
+    static_configs:
+    - targets:
+      - "alertmanager:9093"
+```
+
+Перезапустим окружение terraform... Молимся!
+
+Вроде, заработало, ура. Алерты можно посмотреть в веб интерфейсе Prometheus: http://35.195.3.24:9090/alerts.
+
+

@@ -10,7 +10,7 @@ services:
           - post_db
           - comment_db
   ui:
-    image: ${USERNAME:-rmartsev}/ui
+    image: ${USERNAME}/ui
     ports:
       - 9292:9292/tcp
     networks:
@@ -18,7 +18,7 @@ services:
         aliases:
           - ui
   post:
-    image: ${USERNAME:-rmartsev}/post
+    image: ${USERNAME}/post
     networks:
       back_net:
         aliases:
@@ -27,7 +27,7 @@ services:
         aliases:
           - post
   comment:
-    image: ${USERNAME:-rmartsev}/comment
+    image: ${USERNAME}/comment
     networks:
       back_net:
         aliases:
@@ -36,7 +36,7 @@ services:
         aliases:
           - prom
   prometheus:
-    image: ${USERNAME:-rmartsev}/prometheus
+    image: ${USERNAME}/prometheus
     ports:
       - '9090:9090'
     volumes:
@@ -50,7 +50,7 @@ services:
       - back_net
 
   node-exporter:
-    image: prom/node-exporter:v0.15.2
+    image: prom/node-exporter:latest
     user: root
     volumes:
       - /proc:/host/proc:ro
@@ -67,6 +67,17 @@ services:
       front_net:
         aliases:
           - node
+
+  alertmanager:
+    image: ${USERNAME}/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+    ports:
+      - 9093:9093
+    networks:
+      back_net:
+        aliases:
+          - alertmanager
 
 volumes:
   post_db:

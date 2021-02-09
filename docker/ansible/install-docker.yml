@@ -1,0 +1,64 @@
+---
+- hosts: docker_public
+  become: true
+
+  tasks:
+
+    - name: Add an Apt signing key, uses whichever key is at the URL
+      ansible.builtin.apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add docker repository into sources list
+      ansible.builtin.apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable
+        state: present
+
+    - name: install docker
+      package:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-compose
+          - net-tools
+          - telnet
+        state: present
+
+    - name: Copy files with prometheus
+      ansible.builtin.copy:
+        directory_mode: 0777
+        src: ../../monitoring/prometheus
+        dest: /opt/
+        mode: 0666
+
+    - name: Run docker with prometheus
+      raw: cd /opt/prometheus && export USER_NAME=windemiatrix && docker build -t ${USER_NAME}/prometheus .
+
+    - name: Copy files with alertmanager
+      ansible.builtin.copy:
+        directory_mode: 0777
+        src: ../../monitoring/alertmanager
+        dest: /opt/
+        mode: 0666
+
+    - name: Run docker with alertmanager
+      raw: cd /opt/alertmanager && export USER_NAME=windemiatrix && docker build -t ${USER_NAME}/alertmanager .
+
+    - name: Copy files with services
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /opt/
+        mode: 0666
+      with_fileglob:
+        - ../docker-compose-monitoring.yml
+        - ../docker-compose.yml
+        - ../.env
+
+    - name: Run the service defined in docker-compose.yml and docker-compose-monitoring.yml files
+      docker_compose:
+        project_src: /opt/
+        files:
+          - docker-compose.yml
+          - docker-compose-monitoring.yml
+        state: present
