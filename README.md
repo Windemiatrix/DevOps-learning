@@ -4033,4 +4033,4 @@ alerting:
 
 Вроде, заработало, ура. Алерты можно посмотреть в веб интерфейсе Prometheus: http://35.195.3.24:9090/alerts.
 
-
+Оставлю это тут, пригодится: https://github.com/Otus-DevOps-2019-08/sgremyachikh_microservices
