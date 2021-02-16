@@ -4034,3 +4034,241 @@ alerting:
 Вроде, заработало, ура. Алерты можно посмотреть в веб интерфейсе Prometheus: http://35.195.3.24:9090/alerts.
 
 Оставлю это тут, пригодится: https://github.com/Otus-DevOps-2019-08/sgremyachikh_microservices
+
+# 23. Применение системы логирования в инфраструктуре на основе Docker.
+
+## План
+
+* Сбор неструктурированных логов
+* Визуализация логов
+* Сбор структурированных логов
+* Распределенная трасировка
+
+## Подготовка
+
+Скопируем код микросервисов с логированием в директорию `src`:
+
+``` bash
+cd src
+git clone --branch logging https://github.com/express42/reddit.git
+```
+
+Ранее у нас был подготовлен манифест для `docker-compose`, воспользуемся им, изменив версии образов на logging.
+
+``` yml
+version: '3.3'
+services:
+  post_db:
+    image: mongo:3.2
+    volumes:
+      - post_db:/data/db
+    networks:
+      - back_net
+  ui:
+    build: ./ui
+    image: ${USERNAME}/ui:logging
+    ports:
+      - 9292:9292/tcp
+    networks:
+      - front_net
+  post:
+    build: ./post-py
+    image: ${USERNAME}/post:logging
+    networks:
+      - front_net
+      - back_net
+  comment:
+    build: ./comment
+    image: ${USERNAME}/comment:logging
+    networks:
+      - front_net
+      - back_net
+
+volumes:
+  post_db:
+
+networks:
+  front_net:
+  back_net:
+```
+
+Соберем образы `docker`. После сборки выполним `push` запрос в репозиторий `docker` для каждого собранного сервиса.
+
+``` bash
+docker-composr build
+docker login
+for i in ui post comment; do docker push windemiatrix/$i\:logging; done
+```
+
+## Terraform && AWS
+
+### AWS cli
+
+Установим необходимый пакет:
+
+``` bash
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+```
+
+### Configuration and credential file settings
+
+Перейдем на страницу [Users](https://console.aws.amazon.com/iam/home#/users) для создания нового пользователя, нажмем кнопку `Add user`. Заполним данные:
+
+* User name: admin
+* Access type: Programmatic access
+
+Нажмем на кнопку `Next: Permissions`. Создадим группу пользователей, нажав на `Create group`. Введем название группы `EC2-full` и отметим галочкой пункт `AmazonEC2FullAccess`. Нажмем кнопку `Create group`. Выберем эту группу для нашего пользователя и нажмем кнопку `Next: Tags`. Нажмем кнопку `Next: Review`. Нажмем кнопку `Create user`.
+
+Выберем нашего пользователя и перейдем во вкладку `Security credentials`. Нажмем кнопку `Create access key`.
+
+Далее запустим в консоли команду `aws configure`. Введем сгенерированные данные.
+
+Проверим результат, посмотрев содержимое файла `~/.aws/credentials`. Примерное содержание файла:
+
+``` ini
+[default]
+aws_access_key_id=AKIAIOSFODNN7EXAMPLE
+aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+```
+
+### Подготовка Terraform
+
+[Список пользователей](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/managing-users.html) для инстансов в AWS:
+
+* For Amazon Linux 2 or the Amazon Linux AMI, the user name is ec2-user.
+* For a CentOS AMI, the user name is centos.
+* For a Debian AMI, the user name is admin.
+* For a Fedora AMI, the user name is ec2-user or fedora.
+* For a RHEL AMI, the user name is ec2-user or root.
+* For a SUSE AMI, the user name is ec2-user or root.
+* For an Ubuntu AMI, the user name is ubuntu.
+* Otherwise, if ec2-user and root don't work, check with the AMI provider.
+
+Разобьем конфигурацию на несколько файлов.
+
+Файл конфигурации провайдера `main.tf`
+
+``` hcl
+provider "aws" {
+  region = var.region
+}
+```
+
+Файл конфигурирования AMI (Amazon Machine Images) `aws_ami.tf`:
+
+``` hcl
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
+  }
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+  owners = ["099720109477"] # Canonical
+}
+```
+
+Файл конфигурирования EIP (Elastic IP) `aws_eip.tf`:
+
+``` hcl
+resource "aws_eip" "docker-1" {
+  vpc      = true
+  instance = aws_instance.docker-1.id
+}
+```
+
+Файл конфигурирования инстанса `aws_instance.tf`:
+
+``` hcl
+resource "aws_instance" "docker-1" {
+  ami = data.aws_ami.ubuntu.id
+  instance_type = "t2.micro"
+  key_name = aws_key_pair.rmartsev.key_name
+  
+  vpc_security_group_ids = [
+    aws_security_group.allow_ssh.id
+  ]
+}
+```
+
+Файл конфигурирования ключа доступа `aws_key_pair.tf`:
+
+``` hcl
+resource "aws_key_pair" "rmartsev" {
+  key_name   = "rmartsev"
+  public_key = file(var.public_key_path)
+}
+```
+
+Файл конфигурирования групп безопасности `aws_security_group.tf` (создано с избытком, возможно, лучше разбить на несколько ресурсов для более удобного переиспользования кода):
+
+``` hcl
+resource "aws_security_group" "allow_ssh" {
+  #vpc_id      = aws_vpc.vpc_global.id
+  name        = "ubuntu-security-group"
+  description = "Allow HTTP, HTTPS and SSH traffic"
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+```
+
+Файл с переменными `variables.tfvars`:
+
+``` hcl
+region = "us-west-1"
+public_key_path = "~/.ssh/id_rsa.pub"
+private_key_path = "~/.ssh/id_rsa"
+```
+
+И для удобства файл `output.tf`:
+
+``` hcl
+output "docker-1_private-ip" {
+    value = aws_instance.docker-1.private_ip
+}
+output "docker-1_public-ip" {
+    value = aws_eip.docker-1.public_ip
+}
+```
+
+### Провижинер на Ansible
+
+ToDo: добавить
+
+### Продолжение лекции
+
+Todo: продолжить со страницы 5
