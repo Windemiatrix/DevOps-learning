@@ -1,7 +1,7 @@
 resource "aws_security_group" "allow_ssh" {
   #vpc_id      = aws_vpc.vpc_global.id
-  name        = "ubuntu-security-group"
-  description = "Allow HTTP, HTTPS and SSH traffic"
+  name        = "ssh-security-group"
+  description = "Allow SSH traffic"
 
   ingress {
     description = "SSH"
@@ -11,18 +11,23 @@ resource "aws_security_group" "allow_ssh" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  ingress {
-    description = "HTTPS"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
+
+resource "aws_security_group" "allow_prometheus" {
+  #vpc_id      = aws_vpc.vpc_global.id
+  name        = "prometheus-security-group"
+  description = "Allow Prometheus traffic"
 
   ingress {
-    description = "HTTP"
-    from_port   = 80
-    to_port     = 80
+    description = "prometheus"
+    from_port   = 3000
+    to_port     = 3000
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }

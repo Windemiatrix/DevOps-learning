@@ -4,6 +4,7 @@ resource "aws_instance" "docker-1" {
   key_name = aws_key_pair.rmartsev.key_name
   
   vpc_security_group_ids = [
-    aws_security_group.allow_ssh.id
+    aws_security_group.allow_ssh.id,
+    aws_security_group.allow_prometheus.id
   ]
 }

@@ -4246,7 +4246,7 @@ resource "aws_security_group" "allow_ssh" {
 }
 ```
 
-Файл с переменными `variables.tfvars`:
+Файл с переменными `terraform.tfvars`:
 
 ``` hcl
 region = "us-west-1"
@@ -4267,8 +4267,125 @@ output "docker-1_public-ip" {
 
 ### Провижинер на Ansible
 
-ToDo: добавить
+Настроим провижинер для установки необходимых компонентов на созданный инстанс - файл `aws_provisioner.tf`:
 
-### Продолжение лекции
+``` hcl
+resource "local_file" "AnsibleInventory" {
+    content = templatefile(
+        "../ansible/inventory.tmpl",
+        {
+            docker_public = aws_eip.docker-1.public_ip
+            docker_internal = aws_instance.docker-1.private_ip
+        }
+    )
+    filename = "../ansible/inventory"
+    depends_on = [
+        aws_instance.docker-1
+    ]
+}
 
-Todo: продолжить со страницы 5
+resource "null_resource" "example" {
+  provisioner "remote-exec" {
+    connection {
+      host = aws_eip.docker-1.public_ip
+      user = "ubuntu"
+      private_key = file(var.private_key_path)
+    }
+
+    inline = ["echo '-= CONNECTED =-'"]
+  }
+
+  provisioner "local-exec" {
+    command = "ansible-playbook ../ansible/install-docker.yml"
+  }
+}
+```
+
+## Elastic Stack
+
+Как упоминалось на лекции хранить все логи стоит централизованно: на одном (нескольких) серверах. В этом ДЗ мы рассмотрим пример системы централизованного логирования на примере Elastic стека (ранее известного как ELK): который включает в себя 3 осовных компонента:
+
+* ElasticSearch (TSDB и поисковый движок для хранения данных)
+* Logstash (для агрегации и трансформации данных)
+* Kibana (для визуализации)
+
+Однако для агрегации логов вместо Logstash мы будем использовать Fluentd, таким образом получая еще одно популярное сочетание этих инструментов, получившее название EFK
+
+Создадим отдельный compose-файл логирования для нашей системы `docker/docker-compose-logging.yml`:
+
+``` yml
+---
+version: '3'
+services:
+  fluentd:
+    build: ./fluentd
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+  elasticsearch:
+    image: elasticsearch
+    expose:
+      - 9200
+    ports:
+      - "9200:9200"
+  kibana:
+    image: kibana
+    ports:
+      - "5601:5601"
+...
+```
+
+### Fluentd
+
+Fluentd - инструмент, который может использоваться для отправки, агрегации и преобразования лог-сообщений. Мы будем использовать Fluentd для агрегации (сбора в одной месте) и парсинга логов сервисов нашего приложения.
+
+Создадим образ Fluentd с нужной нам конфигурацией. Создадим файл `logging/ﬂuentd/Dockerﬁle` со следущим содержимым:
+
+``` dockerfile
+FROM fluent/fluentd:v0.12
+RUN gem install fluent-plugin-elasticsearch --no-rdoc --no-ri --version 1.9.5
+RUN gem install fluent-plugin-grok-parser --no-rdoc --no-ri --version 1.0.0
+ADD fluent.conf /fluentd/etc
+```
+
+### ﬂuent.conf
+
+В директории logging/ﬂuentd создайте файл конфигурации `logging/ﬂuentd/ﬂuent.conf`:
+
+``` conf
+<source>
+  @type forward
+  port 24224
+  bind 0.0.0.0
+</source>
+
+<match *.**>
+  @type copy
+  <store>
+    @type elasticsearch
+    host elasticsearch
+    port 9200
+    logstash_format true
+    logstash_prefix fluentd
+    logstash_dateformat %Y%m%d
+    include_tag_key true
+    type_name access_log
+    tag_key @log_name
+    flush_interval 1s
+  </store>
+  <store>
+    @type stdout
+  </store>
+</match>
+```
+
+Соберем docker image для ﬂuentd: из директории `logging/ﬂuentd`:
+
+``` bash
+docker build -t $USER_NAME/fluentd .
+docker push $USER_NAME/fluentd
+```
+
+----
+
+Продолжить со страницы 11
