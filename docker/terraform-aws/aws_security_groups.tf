@@ -1,7 +1,6 @@
-resource "aws_security_group" "allow_ssh" {
-  #vpc_id      = aws_vpc.vpc_global.id
-  name        = "ssh-security-group"
-  description = "Allow SSH traffic"
+resource "aws_security_group" "docker-1-IN" {
+  name        = "docker-1-ingress-security-group"
+  description = "Specify ingress traffic to docker-1 instance"
 
   ingress {
     description = "SSH"
@@ -11,26 +10,66 @@ resource "aws_security_group" "allow_ssh" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
-}
-
-resource "aws_security_group" "allow_prometheus" {
-  #vpc_id      = aws_vpc.vpc_global.id
-  name        = "prometheus-security-group"
-  description = "Allow Prometheus traffic"
 
   ingress {
-    description = "prometheus"
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "cAdvisor"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Prometheus"
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Puma"
+    from_port   = 9292
+    to_port     = 9292
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Grafana"
     from_port   = 3000
     to_port     = 3000
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  ingress {
+    description = "Kibana"
+    from_port   = 5601
+    to_port     = 5601
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "docker-1-OUT" {
+  name        = "docker-1-egress-security-group"
+  description = "Specify egress traffic from docker-1 instance"
 
   egress {
     from_port   = 0

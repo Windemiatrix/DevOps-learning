@@ -1,19 +1,39 @@
 ---
-version: '3'
+version: '3.3'
 services:
+
   fluentd:
-    build: ./fluentd
+    image: ${USERNAME}/fluentd:latest
     ports:
       - "24224:24224"
       - "24224:24224/udp"
+    networks:
+      back_net:
+        aliases:
+          - fluentd
+
   elasticsearch:
-    image: elasticsearch
+    image: elasticsearch:7.10.1
+    environment: 
+      - discovery.type=single-node
     expose:
       - 9200
     ports:
       - "9200:9200"
+    networks:
+      back_net:
+        aliases:
+          - elasticsearch
+
   kibana:
-    image: kibana
+    image: kibana:7.10.1
     ports:
       - "5601:5601"
+    networks:
+      back_net:
+        aliases:
+          - kibana
+
+networks:
+  back_net:
 ...

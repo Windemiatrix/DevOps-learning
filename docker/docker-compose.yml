@@ -19,6 +19,11 @@ services:
           - ui
   post:
     image: ${USERNAME}/post:logging
+    logging:
+      driver: "fluentd"
+      options:
+        fluentd-address: localhost:24224
+        tag: service.post
     networks:
       back_net:
         aliases:

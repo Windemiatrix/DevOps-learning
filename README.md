@@ -4189,9 +4189,14 @@ resource "aws_instance" "docker-1" {
   ami = data.aws_ami.ubuntu.id
   instance_type = "t2.micro"
   key_name = aws_key_pair.rmartsev.key_name
-  
+
+  root_block_device {
+    volume_size           = 20
+  }
+
   vpc_security_group_ids = [
-    aws_security_group.allow_ssh.id
+    aws_security_group.docker-1-IN.id,
+    aws_security_group.docker-1-OUT.id
   ]
 }
 ```
@@ -4208,15 +4213,22 @@ resource "aws_key_pair" "rmartsev" {
 Файл конфигурирования групп безопасности `aws_security_group.tf` (создано с избытком, возможно, лучше разбить на несколько ресурсов для более удобного переиспользования кода):
 
 ``` hcl
-resource "aws_security_group" "allow_ssh" {
-  #vpc_id      = aws_vpc.vpc_global.id
-  name        = "ubuntu-security-group"
-  description = "Allow HTTP, HTTPS and SSH traffic"
+resource "aws_security_group" "docker-1-IN" {
+  name        = "docker-1-ingress-security-group"
+  description = "Specify ingress traffic to docker-1 instance"
 
   ingress {
     description = "SSH"
     from_port   = 22
     to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
@@ -4230,12 +4242,41 @@ resource "aws_security_group" "allow_ssh" {
   }
 
   ingress {
-    description = "HTTP"
-    from_port   = 80
-    to_port     = 80
+    description = "cAdvisor"
+    from_port   = 8080
+    to_port     = 8080
     protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
+
+  ingress {
+    description = "Prometheus"
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Puma"
+    from_port   = 9292
+    to_port     = 9292
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Grafana"
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "docker-1-OUT" {
+  name        = "docker-1-egress-security-group"
+  description = "Specify egress traffic from docker-1 instance"
 
   egress {
     from_port   = 0
@@ -4315,23 +4356,43 @@ resource "null_resource" "example" {
 
 ``` yml
 ---
-version: '3'
+version: '3.3'
 services:
+
   fluentd:
-    build: ./fluentd
+    image: ${USERNAME}/fluentd:latest
     ports:
       - "24224:24224"
       - "24224:24224/udp"
+    networks:
+      back_net:
+        aliases:
+          - fluentd
+
   elasticsearch:
-    image: elasticsearch
+    image: elasticsearch:7.10.1
+    environment: 
+      - discovery.type=single-node
     expose:
       - 9200
     ports:
       - "9200:9200"
+    networks:
+      back_net:
+        aliases:
+          - elasticsearch
+
   kibana:
-    image: kibana
+    image: kibana:7.10.1
     ports:
       - "5601:5601"
+    networks:
+      back_net:
+        aliases:
+          - kibana
+
+networks:
+  back_net:
 ...
 ```
 
@@ -4386,6 +4447,67 @@ docker build -t $USER_NAME/fluentd .
 docker push $USER_NAME/fluentd
 ```
 
-----
+Логи должны иметь заданную (единую) структуру и содержать необходимую для нормальной эксплуатации данного сервиса информацию о его работе
 
-Продолжить со страницы 11
+Лог-сообщения также должны иметь понятный для выбранной системы логирования формат, чтобы избежать ненужной траты ресурсов на преобразование данных в нужный вид.
+
+Структурированные логи мы рассмотрим на примере сервиса post. Для этого выполним на поднятом и настроенном инстансе из каталога `/opt` команду:
+
+``` bash
+$ docker-compose logs -f post
+post_1     | {"addr": "172.19.0.2", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-03 15:51:53"}
+post_1     | {"addr": "172.18.0.8", "event": "request", "level": "info", "method": "GET", "path": "/metrics?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-03 15:51:56"}
+post_1     | {"addr": "172.19.0.2", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-03 15:51:58"}
+```
+
+Каждое событие, связанное с работой нашего приложения логируется в JSON формате и имеет нужную нам структуру: тип события (event), сообщение (message), переданные функции параметры (params), имя сервиса (service) и др.
+
+Как отмечалось на лекции, по умолчанию Docker контейнерами используется json-ﬁle драйвер для логирования информации, которая пишется сервисом внутри контейнера в stdout (и stderr). Для отправки логов во Fluentd используем docker драйвер ﬂuentd
+
+Определим драйвер для логирования для сервиса post внутри compose-файла `docker/docker-compose.yml`:
+
+``` yml
+...
+  post:
+...
+    logging:
+      driver: "fluentd"
+      options:
+        fluentd-address: localhost:24224
+        tag: service.post
+...
+```
+
+Также внесем изменения в фийл `docker/ansible/install-docker.yml`:
+
+``` yml
+...
+    - name: Copy files with services
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /opt/
+        mode: 0666
+      with_fileglob:
+        - ../.env
+        - ../docker-compose.yml
+        - ../docker-compose-monitoring.yml
+        - ../docker-compose-logging.yml
+...
+    - name: Run the services defined docker compose files
+      docker_compose:
+        project_src: /opt/
+        files:
+          - docker-compose-logging.yml
+          - docker-compose.yml
+          - docker-compose-monitoring.yml
+        state: present
+...
+```
+
+Перезапускаем создание инстанса с помощью `terraform`. Создадим несколько постов в приложении `reddit`.
+
+Kibana - инструмент для визуализации и анализа логов от компании Elastic.
+
+Откроем WEB-интерфейс Kibana для просмотра собранных в ElasticSearch логов Post-сервиса (kibana слушает на порту 5601).
+
+Продолжить со страницы 18 методички и домашки Св. Надо изучить подробно функционал на свежую голову и записать все, что делается.
