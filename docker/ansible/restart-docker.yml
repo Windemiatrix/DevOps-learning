@@ -1,0 +1,29 @@
+---
+- hosts: docker_public
+  become: true
+  vars:
+    swap_file_size_mb: 4096
+    swap_file_path: /swapfile
+
+  tasks:
+
+    - name: Copy files with services
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /opt/
+        mode: 0666
+      with_fileglob:
+        - ../.env
+        - ../docker-compose.yml
+        - ../docker-compose-monitoring.yml
+        - ../docker-compose-logging.yml
+
+    - name: Run the services defined docker compose files
+      docker_compose:
+        project_src: /opt/
+        files:
+          - docker-compose-logging.yml
+          - docker-compose.yml
+          - docker-compose-monitoring.yml
+        state: present
+...

@@ -2,8 +2,20 @@
 version: '3.3'
 services:
 
+  zipkin:
+    image: openzipkin/zipkin
+    ports:
+      - "9411:9411"
+    networks:
+      back_net:
+        aliases:
+          - zipkin
+      front_net:
+        aliases:
+          - zipkin
+
   fluentd:
-    image: ${USERNAME}/fluentd:latest
+    image: ${USERNAME}/fluentd:1.9
     ports:
       - "24224:24224"
       - "24224:24224/udp"
@@ -36,4 +48,5 @@ services:
 
 networks:
   back_net:
+  front_net:
 ...
