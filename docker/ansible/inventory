@@ -1,5 +1,0 @@
-[t_public]
-docker_public ansible_host=54.215.80.152
-
-[t_private]
-docker_private ansible_host=172.31.26.80
