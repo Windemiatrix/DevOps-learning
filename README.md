@@ -4034,3 +4034,702 @@ alerting:
 Вроде, заработало, ура. Алерты можно посмотреть в веб интерфейсе Prometheus: http://35.195.3.24:9090/alerts.
 
 Оставлю это тут, пригодится: https://github.com/Otus-DevOps-2019-08/sgremyachikh_microservices
+
+# 23. Применение системы логирования в инфраструктуре на основе Docker.
+
+## План
+
+* Сбор неструктурированных логов
+* Визуализация логов
+* Сбор структурированных логов
+* Распределенная трасировка
+
+## Подготовка
+
+Скопируем код микросервисов с логированием в директорию `src`:
+
+``` bash
+cd src
+git clone --branch logging https://github.com/express42/reddit.git
+```
+
+Ранее у нас был подготовлен манифест для `docker-compose`, воспользуемся им, изменив версии образов на logging.
+
+``` yml
+version: '3.3'
+services:
+  post_db:
+    image: mongo:3.2
+    volumes:
+      - post_db:/data/db
+    networks:
+      - back_net
+  ui:
+    build: ./ui
+    image: ${USERNAME}/ui:logging
+    ports:
+      - 9292:9292/tcp
+    networks:
+      - front_net
+  post:
+    build: ./post-py
+    image: ${USERNAME}/post:logging
+    networks:
+      - front_net
+      - back_net
+  comment:
+    build: ./comment
+    image: ${USERNAME}/comment:logging
+    networks:
+      - front_net
+      - back_net
+
+volumes:
+  post_db:
+
+networks:
+  front_net:
+  back_net:
+```
+
+Соберем образы `docker`. После сборки выполним `push` запрос в репозиторий `docker` для каждого собранного сервиса.
+
+``` bash
+docker-composr build
+docker login
+for i in ui post comment; do docker push windemiatrix/$i\:logging; done
+```
+
+## Terraform && AWS
+
+### AWS cli
+
+Установим необходимый пакет:
+
+``` bash
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+unzip awscliv2.zip
+sudo ./aws/install
+```
+
+### Configuration and credential file settings
+
+Перейдем на страницу [Users](https://console.aws.amazon.com/iam/home#/users) для создания нового пользователя, нажмем кнопку `Add user`. Заполним данные:
+
+* User name: admin
+* Access type: Programmatic access
+
+Нажмем на кнопку `Next: Permissions`. Создадим группу пользователей, нажав на `Create group`. Введем название группы `EC2-full` и отметим галочкой пункт `AmazonEC2FullAccess`. Нажмем кнопку `Create group`. Выберем эту группу для нашего пользователя и нажмем кнопку `Next: Tags`. Нажмем кнопку `Next: Review`. Нажмем кнопку `Create user`.
+
+Выберем нашего пользователя и перейдем во вкладку `Security credentials`. Нажмем кнопку `Create access key`.
+
+Далее запустим в консоли команду `aws configure`. Введем сгенерированные данные.
+
+Проверим результат, посмотрев содержимое файла `~/.aws/credentials`. Примерное содержание файла:
+
+``` ini
+[default]
+aws_access_key_id=AKIAIOSFODNN7EXAMPLE
+aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+```
+
+### Подготовка Terraform
+
+[Список пользователей](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/managing-users.html) для инстансов в AWS:
+
+* For Amazon Linux 2 or the Amazon Linux AMI, the user name is ec2-user.
+* For a CentOS AMI, the user name is centos.
+* For a Debian AMI, the user name is admin.
+* For a Fedora AMI, the user name is ec2-user or fedora.
+* For a RHEL AMI, the user name is ec2-user or root.
+* For a SUSE AMI, the user name is ec2-user or root.
+* For an Ubuntu AMI, the user name is ubuntu.
+* Otherwise, if ec2-user and root don't work, check with the AMI provider.
+
+Разобьем конфигурацию на несколько файлов.
+
+Файл конфигурации провайдера `main.tf`
+
+``` hcl
+provider "aws" {
+  region = var.region
+}
+```
+
+Файл конфигурирования AMI (Amazon Machine Images) `aws_ami.tf`:
+
+``` hcl
+data "aws_ami" "ubuntu" {
+  most_recent = true
+  filter {
+    name   = "name"
+    values = ["ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*"]
+  }
+  filter {
+    name   = "virtualization-type"
+    values = ["hvm"]
+  }
+  owners = ["099720109477"] # Canonical
+}
+```
+
+Файл конфигурирования EIP (Elastic IP) `aws_eip.tf`:
+
+``` hcl
+resource "aws_eip" "docker-1" {
+  vpc      = true
+  instance = aws_instance.docker-1.id
+}
+```
+
+Файл конфигурирования инстанса `aws_instance.tf`:
+
+``` hcl
+resource "aws_instance" "docker-1" {
+  ami = data.aws_ami.ubuntu.id
+  instance_type = "t2.micro"
+  key_name = aws_key_pair.rmartsev.key_name
+
+  root_block_device {
+    volume_size           = 20
+  }
+
+  vpc_security_group_ids = [
+    aws_security_group.docker-1-IN.id,
+    aws_security_group.docker-1-OUT.id
+  ]
+}
+```
+
+Файл конфигурирования ключа доступа `aws_key_pair.tf`:
+
+``` hcl
+resource "aws_key_pair" "rmartsev" {
+  key_name   = "rmartsev"
+  public_key = file(var.public_key_path)
+}
+```
+
+Файл конфигурирования групп безопасности `aws_security_group.tf` (создано с избытком, возможно, лучше разбить на несколько ресурсов для более удобного переиспользования кода):
+
+``` hcl
+resource "aws_security_group" "docker-1-IN" {
+  name        = "docker-1-ingress-security-group"
+  description = "Specify ingress traffic to docker-1 instance"
+
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "cAdvisor"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Prometheus"
+    from_port   = 9090
+    to_port     = 9090
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Puma"
+    from_port   = 9292
+    to_port     = 9292
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Grafana"
+    from_port   = 3000
+    to_port     = 3000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "docker-1-OUT" {
+  name        = "docker-1-egress-security-group"
+  description = "Specify egress traffic from docker-1 instance"
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+```
+
+Файл с переменными `terraform.tfvars`:
+
+``` hcl
+region = "us-west-1"
+public_key_path = "~/.ssh/id_rsa.pub"
+private_key_path = "~/.ssh/id_rsa"
+```
+
+И для удобства файл `output.tf`:
+
+``` hcl
+output "docker-1_private-ip" {
+    value = aws_instance.docker-1.private_ip
+}
+output "docker-1_public-ip" {
+    value = aws_eip.docker-1.public_ip
+}
+```
+
+### Провижинер на Ansible
+
+Настроим провижинер для установки необходимых компонентов на созданный инстанс - файл `aws_provisioner.tf`:
+
+``` hcl
+resource "local_file" "AnsibleInventory" {
+    content = templatefile(
+        "../ansible/inventory.tmpl",
+        {
+            docker_public = aws_eip.docker-1.public_ip
+            docker_internal = aws_instance.docker-1.private_ip
+        }
+    )
+    filename = "../ansible/inventory"
+    depends_on = [
+        aws_instance.docker-1
+    ]
+}
+
+resource "null_resource" "example" {
+  provisioner "remote-exec" {
+    connection {
+      host = aws_eip.docker-1.public_ip
+      user = "ubuntu"
+      private_key = file(var.private_key_path)
+    }
+
+    inline = ["echo '-= CONNECTED =-'"]
+  }
+
+  provisioner "local-exec" {
+    command = "ansible-playbook ../ansible/install-docker.yml"
+  }
+}
+```
+
+## Elastic Stack
+
+Как упоминалось на лекции хранить все логи стоит централизованно: на одном (нескольких) серверах. В этом ДЗ мы рассмотрим пример системы централизованного логирования на примере Elastic стека (ранее известного как ELK): который включает в себя 3 осовных компонента:
+
+* ElasticSearch (TSDB и поисковый движок для хранения данных)
+* Logstash (для агрегации и трансформации данных)
+* Kibana (для визуализации)
+
+Однако для агрегации логов вместо Logstash мы будем использовать Fluentd, таким образом получая еще одно популярное сочетание этих инструментов, получившее название EFK
+
+Создадим отдельный compose-файл логирования для нашей системы `docker/docker-compose-logging.yml`:
+
+``` yml
+---
+version: '3.3'
+services:
+
+  fluentd:
+    image: ${USERNAME}/fluentd:latest
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+    networks:
+      back_net:
+        aliases:
+          - fluentd
+
+  elasticsearch:
+    image: elasticsearch:7.10.1
+    environment: 
+      - discovery.type=single-node
+    expose:
+      - 9200
+    ports:
+      - "9200:9200"
+    networks:
+      back_net:
+        aliases:
+          - elasticsearch
+
+  kibana:
+    image: kibana:7.10.1
+    ports:
+      - "5601:5601"
+    networks:
+      back_net:
+        aliases:
+          - kibana
+
+networks:
+  back_net:
+...
+```
+
+### Fluentd
+
+Fluentd - инструмент, который может использоваться для отправки, агрегации и преобразования лог-сообщений. Мы будем использовать Fluentd для агрегации (сбора в одной месте) и парсинга логов сервисов нашего приложения.
+
+Создадим образ Fluentd с нужной нам конфигурацией. Создадим файл `logging/ﬂuentd/Dockerﬁle` со следущим содержимым:
+
+``` dockerfile
+FROM fluent/fluentd:v0.12
+RUN gem install fluent-plugin-elasticsearch --no-rdoc --no-ri --version 1.9.5
+RUN gem install fluent-plugin-grok-parser --no-rdoc --no-ri --version 1.0.0
+ADD fluent.conf /fluentd/etc
+```
+
+### ﬂuent.conf
+
+В директории logging/ﬂuentd создайте файл конфигурации `logging/ﬂuentd/ﬂuent.conf`:
+
+``` conf
+<source>
+  @type forward
+  port 24224
+  bind 0.0.0.0
+</source>
+
+<match *.**>
+  @type copy
+  <store>
+    @type elasticsearch
+    host elasticsearch
+    port 9200
+    logstash_format true
+    logstash_prefix fluentd
+    logstash_dateformat %Y%m%d
+    include_tag_key true
+    type_name access_log
+    tag_key @log_name
+    flush_interval 1s
+  </store>
+  <store>
+    @type stdout
+  </store>
+</match>
+```
+
+Соберем docker image для ﬂuentd: из директории `logging/ﬂuentd`:
+
+``` bash
+docker build -t $USER_NAME/fluentd .
+docker push $USER_NAME/fluentd
+```
+
+Логи должны иметь заданную (единую) структуру и содержать необходимую для нормальной эксплуатации данного сервиса информацию о его работе
+
+Лог-сообщения также должны иметь понятный для выбранной системы логирования формат, чтобы избежать ненужной траты ресурсов на преобразование данных в нужный вид.
+
+Структурированные логи мы рассмотрим на примере сервиса post. Для этого выполним на поднятом и настроенном инстансе из каталога `/opt` команду:
+
+``` bash
+$ docker-compose logs -f post
+post_1     | {"addr": "172.19.0.2", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-03 15:51:53"}
+post_1     | {"addr": "172.18.0.8", "event": "request", "level": "info", "method": "GET", "path": "/metrics?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-03 15:51:56"}
+post_1     | {"addr": "172.19.0.2", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-03 15:51:58"}
+```
+
+Каждое событие, связанное с работой нашего приложения логируется в JSON формате и имеет нужную нам структуру: тип события (event), сообщение (message), переданные функции параметры (params), имя сервиса (service) и др.
+
+Как отмечалось на лекции, по умолчанию Docker контейнерами используется json-ﬁle драйвер для логирования информации, которая пишется сервисом внутри контейнера в stdout (и stderr). Для отправки логов во Fluentd используем docker драйвер ﬂuentd
+
+Определим драйвер для логирования для сервиса post внутри compose-файла `docker/docker-compose.yml`:
+
+``` yml
+...
+  post:
+...
+    logging:
+      driver: "fluentd"
+      options:
+        fluentd-address: localhost:24224
+        tag: service.post
+...
+```
+
+Также внесем изменения в фийл `docker/ansible/install-docker.yml`:
+
+``` yml
+...
+    - name: Copy files with services
+      ansible.builtin.copy:
+        src: "{{ item }}"
+        dest: /opt/
+        mode: 0666
+      with_fileglob:
+        - ../.env
+        - ../docker-compose.yml
+        - ../docker-compose-monitoring.yml
+        - ../docker-compose-logging.yml
+...
+    - name: Run the services defined docker compose files
+      docker_compose:
+        project_src: /opt/
+        files:
+          - docker-compose-logging.yml
+          - docker-compose.yml
+          - docker-compose-monitoring.yml
+        state: present
+...
+```
+
+Перезапускаем создание инстанса с помощью `terraform`. Создадим несколько постов в приложении `reddit`.
+
+Kibana - инструмент для визуализации и анализа логов от компании Elastic.
+
+Откроем WEB-интерфейс Kibana для просмотра собранных в ElasticSearch логов Post-сервиса (kibana слушает на порту 5601).
+
+Для выполнения задания методички на 19 странице перейдем в веб-интерфейсе `Stack Management` -> `Kibana` -> `Index patterns` -> `Create index pattern`. Заполняем данные:
+
+* Index pattern name: fluentd-*;
+* Time field: @timestamp.
+
+Нажимаем `Create index pattern`.
+
+Перейдем в меню `Kibana` -> `Discover`. На графике отображается количество сообщений, поступающих за единицу времени. У каждого сообщения можно посмотреть более подробную информацию при нажатии на треугольник (развернуть). 
+
+Видим лог-сообщение, которое мы недавно наблюдали в терминале. Теперь эти лог-сообщения хранятся централизованно в ElasticSearch. Также видим доп. информацию о том, откуда поступил данный лог. 
+
+Обратим внимание на то, что наименования в левом столбце, называются полями. По полям можно производить поиск для быстрого нахождения нужной информации.
+
+Для того чтобы посмотреть некоторые примеры поиска, можно ввести в поле поиска произвольное выражение.
+
+Поле log содержит в себе JSON объект, который содержит много интересной нам информации. Нам хотелось бы выделить эту информацию в поля, чтобы иметь возможность производить по ним поиск. Например, для того чтобы найти все логи, связанные с определенным событием (event) или конкретным сервисов (service).
+
+Мы можем достичь этого за счет использования фильтров для выделения нужной информации.
+
+Добавим фильтр для парсинга json логов, приходящих от post сервиса, в конфиг ﬂuentd `logging/ﬂuentd/ﬂuent.conf`:
+
+```
+...
+<filter service.post>
+  @type parser
+  format json
+  key_name log
+</filter>
+...
+```
+
+Теперь нам необходимо пересобрать образ `fluentd`:
+
+``` bash
+docker build -t $USER_NAME/fluentd:1.2 .
+docker push $USER_NAME/fluentd:1.2
+```
+
+Внесем изменения в файл Ansible, разворачивающий нашу инфраструктуру логирования `docker/docker-compose-logging.yml`:
+
+``` yml
+  fluentd:
+    image: ${USERNAME}/fluentd:1.2
+    ports:
+      - "24224:24224"
+      - "24224:24224/udp"
+    networks:
+      back_net:
+        aliases:
+          - fluentd
+```
+
+И попробуем перезапустить плейбук ansible. После выполнения плейбука создадим несколько новых постов, чтобы проверить парсинг логов. Вновь обратимся к Kibana. Взглянем на одно из сообщений и увидим, что вместо одного поля log появилось множество полей с нужной нам информацией
+
+## Неструктурированные логи
+
+Неструктурированные логи отличаются отсутствием четкой структуры данных. Также часто бывает, что формат лог-сообщений не подстроен под систему централизованного логирования, что существенно увеличивает затраты вычислительных и временных ресурсов на обработку данных и выделение нужной информации.
+
+На примере сервиса ui мы рассмотрим пример логов с неудобным форматом сообщений.
+
+По аналогии с post сервисом определим для ui сервиса драйвер для логирования ﬂuentd в compose-файле `docker/docker-compose.yml`:
+
+``` yml
+  ui:
+    image: ${USERNAME}/ui:logging
+    ports:
+      - 9292:9292/tcp
+    networks:
+      front_net:
+        aliases:
+          - ui
+    environment:
+      - POST_SERVICE_HOST=post
+      - POST_SERVICE_PORT=5000
+      - COMMENT_SERVICE_HOST=comment
+      - COMMENT_SERVICE_PORT=9292
+    depends_on:
+      - post
+    logging:
+      driver: "fluentd"
+      options:
+        fluentd-address: localhost:24224
+        tag: service.ui
+```
+
+Запустим Ansible плейбук для применения изменений.
+
+Посмотрим формат собираемых сообщений:
+
+```
+I, [2021-03-04T17:26:30.737090 #1]  INFO -- : service=ui | event=show_post | request_id=56052ca5-afa6-4cb4-86fb-0fca1d85cd58 | message='Successfully showed the post' | params: {"id":"60410af797934a0014d97a8b"}
+```
+
+Когда приложение или сервис не пишет структурированные логи, приходится использовать старые добрые регулярные выражения для их парсинга в `/docker/ﬂuentd/ﬂuent.conf`
+
+Следующее регулярное выражение нужно, чтобы успешно выделить интересующую нас информацию из лога UI-сервиса в поля:
+
+```
+<filter service.ui>
+  @type parser
+  format /\[(?<time>[^\]]*)\]  (?<level>\S+) (?<user>\S+)[\W]*service=(?<service>\S+)[\W]*event=(?<event>\S+)[\W]*(?:path=(?<path>\S+)[\W]*)?request_id=(?<request_id>\S+)[\W]*(?:remote_addr=(?<remote_addr>\S+)[\W]*)?(?:method= (?<method>\S+)[\W]*)?(?:response_status=(?<response_status>\S+)[\W]*)?(?:message='(?<message>[^\']*)[\W]*)?/
+  key_name log
+</filter>
+```
+
+Пересоберем докер образ для fluentd, поменив его тегом 1.3. Также внесем изменения в файл `docker/docker-compose-logging.yml`. После внесения изменений запустим плейбук для применения изменений.
+
+После применения конфигурации логи отображаются в человекочитаемом виде.
+
+Созданные регулярки могут иметь ошибки, их сложно менять и невозможно читать. Для облегчения задачи парсинга вместо стандартных регулярок можно использовать grok-шаблоны. По-сути grok’и - это именованные шаблоны регулярных выражений (очень похоже на функции). Можно использовать готовый regexp, просто сославшись на него как на функцию `docker/ﬂuentd/ﬂuent.conf`:
+
+```
+...
+<filter service.ui>
+  @type parser
+  format grok
+  grok_pattern %{RUBY_LOGGER}
+  key_name log
+</filter>
+...
+```
+
+Это grok-шаблон, зашитый в плагин для ﬂuentd. В развернутом виде он выглядит вот так:
+
+```
+%{RUBY_LOGGER} [(?<timestamp>(?>\d\d){1,2}-(?:0?[1-9]|1[0-2])-(?:(?:0[1-9])|(?:[12][0-9])|(?:3[01])|[1-9])[T ](?:2[0123]|[01]?[0-9]):?(?:[0-5][0-9])(?::?(?:(?:[0-5]?[0-9]|60)(?:[:.,][0-9]+)?))?(?:Z|[+-](?:2[0123]|[01]?[0-9])(?::?(?:[0-5][0-9])))?) #(?<pid>\b(?:[1-9][0-9]*)\b)\] *(?<loglevel>(?:DEBUG|FATAL|ERROR|WARN|INFO)) -- +(?<progname>.*?): (?<message>.*)
+```
+
+Пересоберем докер образ для fluentd, поменив его тегом 1.4. Также внесем изменения в файл `docker/docker-compose-logging.yml`. После внесения изменений запустим плейбук для применения изменений.
+
+Однако, часть логов нужно еще распарсить. Для этого используем несколько Grok-ов по-очереди:
+
+```
+<filter service.ui>
+  @type parser
+  key_name log
+  format grok
+  grok_pattern %{RUBY_LOGGER}
+</filter>
+
+<filter service.ui>
+  @type parser
+  format grok
+  grok_pattern service=%{WORD:service} \| event=%{WORD:event} \| request_id=%{GREEDYDATA:request_id} \| message='%{GREEDYDATA:message}'
+  key_name message
+  reserve_data true
+</filter>
+```
+
+Пересоберем докер образ для fluentd, поменив его тегом 1.5. Также внесем изменения в файл `docker/docker-compose-logging.yml`. После внесения изменений запустим плейбук для применения изменений.
+
+В итоге получим в Kibana (если совершаем действия в ui-сервисе) логи, удобные для анализа и восприятия.
+
+## Задание со *
+
+Найти формат логов UI-сервиса, который остался не разобранным.
+
+Для этого добавим в конфигурацию строчки:
+
+```
+<filter service.ui>
+  @type parser
+  format grok
+  grok_pattern service=%{WORD:service} \| event=%{WORD:event} \| path=%{GREEDYDATA:path} \| request_id=%{GREEDYDATA:request_id} \| remote_addr=%{GREEDYDATA:remote_addr} \| method=%{GREEDYDATA:method} \| response_status=%{GREEDYDATA:response_status}
+  key_name message
+  reserve_data true
+</filter>
+```
+
+Пересоберем докер образ для fluentd, поменив его тегом 1.9. Также внесем изменения в файл `docker/docker-compose-logging.yml`. После внесения изменений запустим плейбук для применения изменений.
+
+## Распределенный трейсинг
+
+Добавьте в compose-файл для сервисов логирования сервис распределенного трейсинга Zipkin `docker/docker-compose-logging.yml`:
+
+``` yml
+  zipkin:
+    image: openzipkin/zipkin
+    ports:
+      - "9411:9411"
+```
+
+Правим наш docker/docker-compose.yml Добавьте для каждого сервиса поддержку ENV переменных и задайте параметризованный параметр ZIPKIN_ENABLED
+
+``` yml
+    environment:
+      - ZIPKIN_ENABLED=${ZIPKIN_ENABLED}
+```
+
+В .env файле укажите
+
+```
+ZIPKIN_ENABLED=true
+```
+
+Перезапустим плейбук Ansible.
+
+Внесем изменения в группы безопасности AWS и применим изменения с помощью terraform:
+
+```
+...
+  ingress {
+    description = "Zipkin"
+    from_port   = 9411
+    to_port     = 9411
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+...
+```
+
+Откроем Zipkin WEB UI на порту 9411, пока никаких трейсов поиск не должен дать, т.к. никаких запросов нашему приложению еще не поступало.
+
+Откроем главную страницу приложения и обновим ее несколько раз.
+
+Заглянув затем в UI Zipkin (страницу потребуется обновить), мы должны найти несколько трейсов (следов, которые оставили запросы проходя через систему наших сервисов).
+
+Нажмем на один из трейсов, чтобы посмотреть, как запрос шел через нашу систему микросервисов и каково общее время обработки запроса у нашего приложения при запросе главной страницы
+
+Видим, что первым делом наш запрос попал к ui сервису, который смог обработать наш запрос за суммарное время равное 187.566 ms.
+
+Из этих 187 ms ушло 134.155ms на то чтобы ui мог направить запрос post сервису по пути /posts и получить от него ответ в виде списка постов. Post сервис в свою очередь использовал функцию обращения к БД за списком постов, на что ушло 4.827 ms.
+
+Повторим немного терминологию: синие полоски со временем называются span и представляют собой одну операцию, которая произошла при обработке запроса. Набор span-ов называется трейсом. Суммарное время обработки нашего запроса равно верхнему span-у, который включает в себя время всех span-ов, расположенных под ним.

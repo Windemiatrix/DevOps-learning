@@ -1,8 +1,76 @@
 ---
 - hosts: docker_public
   become: true
+  vars:
+    swap_file_size_mb: 4096
+    swap_file_path: /swapfile
 
   tasks:
+
+    - name: Create swap file
+      command: dd if=/dev/zero of={{ swap_file_path }} bs=1024 count={{ swap_file_size_mb }}k
+              creates="{{ swap_file_path }}"
+      tags:
+        - swap.file.create
+
+
+    - name: Change swap file permissions
+      file: path="{{ swap_file_path }}"
+            owner=root
+            group=root
+            mode=0600
+      tags:
+        - swap.file.permissions
+
+
+    - name: "Check swap file type"
+      command: file {{ swap_file_path }}
+      register: swapfile
+      tags:
+        - swap.file.mkswap
+
+
+    - name: Make swap file
+      command: "sudo mkswap {{ swap_file_path }}"
+      when: swapfile.stdout.find('swap file') == -1
+      tags:
+        - swap.file.mkswap
+
+
+    - name: Write swap entry in fstab
+      mount: name=none
+            src={{ swap_file_path }}
+            fstype=swap
+            opts=sw
+            passno=0
+            dump=0
+            state=present
+      tags:
+        - swap.fstab
+
+
+    - name: Mount swap
+      command: "swapon {{ swap_file_path }}"
+      when: ansible_swaptotal_mb < 1
+      tags:
+        - swap.file.swapon
+
+    - name: Update apt-get repo and cache
+      apt: update_cache=yes force_apt_get=yes cache_valid_time=3600
+
+    - name: Upgrade all apt packages
+      apt: upgrade=dist force_apt_get=yes
+
+    - name: install useful tools
+      package:
+        name:
+          - net-tools
+          - telnet
+          - gcc
+          - htop
+          - nload
+          - vim
+        state: present
 
     - name: Add an Apt signing key, uses whichever key is at the URL
       ansible.builtin.apt_key:
@@ -11,18 +79,19 @@
 
     - name: Add docker repository into sources list
       ansible.builtin.apt_repository:
+        # repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu xenial stable
+        # repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu bionic stable
         repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable
         state: present
 
     - name: install docker
       package:
         name:
+          - docker
           - docker-ce
           - docker-ce-cli
           - containerd.io
           - docker-compose
-          - net-tools
-          - telnet
         state: present
 
     - name: Copy files with prometheus
@@ -51,14 +120,22 @@
         dest: /opt/
         mode: 0666
       with_fileglob:
-        - ../docker-compose-monitoring.yml
-        - ../docker-compose.yml
         - ../.env
+        - ../docker-compose.yml
+        - ../docker-compose-monitoring.yml
+        - ../docker-compose-logging.yml
 
-    - name: Run the service defined in docker-compose.yml and docker-compose-monitoring.yml files
+    - sysctl:
+        name: vm.max_map_count
+        value: '262144'
+        state: present
+
+    - name: Run the services defined docker compose files
       docker_compose:
         project_src: /opt/
         files:
+          - docker-compose-logging.yml
           - docker-compose.yml
           - docker-compose-monitoring.yml
         state: present
+...
