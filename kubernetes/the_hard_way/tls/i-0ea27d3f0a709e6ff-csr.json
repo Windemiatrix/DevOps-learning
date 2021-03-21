@@ -1,0 +1,16 @@
+{
+  "CN": "system:node:i-0ea27d3f0a709e6ff",
+  "key": {
+    "algo": "rsa",
+    "size": 2048
+  },
+  "names": [
+    {
+      "C": "RU",
+      "L": "Vladimir",
+      "O": "system:nodes",
+      "OU": "Kubernetes The Hard Way",
+      "ST": "CFO"
+    }
+  ]
+}
