@@ -4818,3 +4818,1025 @@ P.S. Эту директорию и файлы в ней в дальнейшем
 * Описать установку компонентов Kubernetes из THW в виде Ansible-плейбуков в папке kubernetes/ansible; 
 * Задание достаточно выполнить в виде Proof of Concept, просто автоматизация некоторых действий туториала.
 
+# Kubernetes 2
+
+План:
+
+* Развернуть локальное окружение для работы с Kubernetes;
+* Развернуть Kubernetes в GKE;
+* Запустить reddit в Kubernetes.
+
+## Разворачиваем Kubernetes локально
+
+Для дальнейшей работы нам нужно подготовить локальное окружение, которое будет состоять из:
+
+1. kubectl - фактически, главной утилиты для работы c Kubernetes API (все, что делает kubectl, можно сделать с помощью HTTP-запросов к API k8s).
+2. Директории ~/.kube - содержит служебную инфу для kubectl (конфиги, кеши, схемы API).
+3. minikube - утилиты для разворачивания локальной инсталляции Kubernetes.
+
+### Установка KVM
+
+Я использую fedora linux, для него нужно выполнить команду:
+
+``` bash
+sudo dnf install @virtualization
+```
+
+Запустим демон и добавим его в автозагрузку:
+
+``` bash
+sudo systemctl start libvirtd
+sudo systemctl enable libvirtd
+```
+
+Проверим установку:
+
+``` bash
+$ lsmod | grep kvm
+kvm_intel             327680  0
+kvm                   950272  1 kvm_intel
+irqbypass              16384  1 kvm
+```
+
+## Minicobe
+
+Запустим кластер с minicube:
+
+``` bash
+$ minikube start
+😄  minikube v1.18.1 on Fedora 33
+✨  Automatically selected the podman driver. Other choices: none, ssh
+👍  Starting control plane node minikube in cluster minikube
+🔥  Creating podman container (CPUs=2, Memory=3900MB) ...
+🐳  Preparing Kubernetes v1.20.2 on Docker 20.10.3 ...
+    ▪ Generating certificates and keys ...
+    ▪ Booting up control plane ...
+    ▪ Configuring RBAC rules ...
+🔎  Verifying Kubernetes components...
+    ▪ Using image gcr.io/k8s-minikube/storage-provisioner:v4
+🌟  Enabled addons: storage-provisioner, default-storageclass
+🏄  Done! kubectl is now configured to use "minikube" cluster and "default" namespace by default
+```
+
+Наш Minikube-кластер развернут. При этом автоматически был настроен конфиг kubectl. Проверим, что это так:
+
+``` bash
+$ kubectl get nodes
+NAME       STATUS   ROLES                  AGE    VERSION
+minikube   Ready    control-plane,master   108s   v1.20.2
+```
+
+Конфигурация kubectl - это контекст. Контекст - это комбинация:
+
+1. cluster - API-сервер
+2. user - пользователь для подключения к кластеру
+3. namespace - область видимости (не обязательно, поумолчанию default)
+
+Информацию о контекстах kubectl сохраняет в файле `~/.kube/config`.
+
+Файл `~/.kube/config` - это такой же манифест kubernetes в YAML-формате (есть и Kind, и ApiVersion).
+
+``` yml
+apiVersion: v1
+clusters: # Список кластеров
+- cluster: 
+    certificate-authority: /Users/chromko/.minikube/ca.crt
+    server: https://192.168.99.100:8443
+  name: minikube
+contexts: # Список контекстов
+- context:
+    cluster: minikube
+    user: minikube
+  name: minikube
+current-context: minikube
+kind: Config
+preferences: {}
+users: # Список пользователей
+- name: minikube
+  user:
+    as-user-extra: {}
+    client-certificate: /Users/chromko/.minikube/client.crt
+    client-key: /Users/chromko/.minikube/client.key
+ ```
+
+Кластер (cluster) - это:
+
+1. server - адрес kubernetes API-сервера
+2. certificate-authority - корневой сертификат (которым подписан SSL-сертификат самого сервера), чтобы убедиться, что нас не обманывают и перед нами тот самый сервер 
+3. name (Имя) для идентификации в конфиге
+
+``` yml
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority: /Users/chromko/.minikube/ca.crt
+    server: https://192.168.99.100:8443
+  name: minikube
+```
+
+Пользователь (user) - это:
+
+1. Данные для аутентификации (зависит от того, как настроен сервер). Это могут быть:
+    * username + password (Basic Auth
+    * client key + client certificate
+    * token
+    * auth-provider config (например GCP)
+2. name (Имя) для идентификации в конфиге
+
+``` yml
+users:
+- name: minikube
+  user:
+    as-user-extra: {}
+    client-certificate: /Users/chromko/.minikube/client.crt
+    client-key: /Users/chromko/.minikube/client.key
+```
+
+Контекст (контекст) - это:
+
+1. cluster - имя кластера из списка clusters
+2. user - имя пользователя из списка users
+3. namespace - область видимости по-умолчанию (не обязательно)
+4. name (Имя) для идентификации в конфиге
+
+``` yml
+contexts:
+- context:
+    cluster: minikube
+    user: minikube
+  name: minikube
+```
+
+Обычно порядок конфигурирования kubectl следующий:
+
+1. Создать cluster:
+
+``` bash
+kubectl config set-cluster … cluster_name
+```
+
+2. Создать данные пользователя (credentials)
+
+``` bash
+kubectl config set-credentials … user_name
+```
+
+3. Создать контекст
+
+``` bash
+$ kubectl config set-context context_name \
+--cluster=cluster_name \
+--user=user_name
+```
+
+4. Использовать контекст
+
+``` bash
+kubectl config use-context context_name
+```
+
+Таким образом kubectl конфигурируется для подключения к разным кластерам, под разными пользователями.
+
+Текущий контекст можно увидеть так:
+
+``` bash
+$ kubectl config current-context
+minikube
+```
+
+Список всех контекстов можно увидеть так:
+
+``` bash
+$ kubectl config get-contexts
+CURRENT   NAME       CLUSTER    AUTHINFO   NAMESPACE
+*         minikube   minikube   minikube   default
+```
+
+Для работы в приложения kubernetes, нам необходимо описать их желаемое состояние либо в YAML-манифестах, либо с помощью командной строки.
+
+Всю конфигурацию поместите в каталог ./kubernetes/reddit внутри вашего репозитория.
+
+Основные объекты - это ресурсы Deployment. Как помним из предыдущего занятия, основные его задачи:
+
+* Создание ReplicationSet (следит, чтобы число запущенных Pod-ов соответствовало описанному)
+* Ведение истории версий запущенных Pod-ов (для различных стратегий деплоя, для возможностей отката)
+* Описание процесса деплоя (стратегия, параметры стратегий)
+
+## UI
+
+`kubernetes/reddit/ui-deployment.yml`:
+
+``` yml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: # Блок метаданных деплоя
+  name: ui
+  labels:
+    app: reddit
+    component: ui
+spec: # Блок спецификаций деплоя
+  replicas: 3
+  selector: # Selector описывает, как отслеживать PODы
+    matchLabels:
+      app: reddit
+      component: ui
+  template: # Блок описания PODов
+    metadata:
+      name: ui-pod
+      labels:
+        app: reddit
+        component: ui
+    spec:
+      containers:
+      - image: windemiatrix/ui # Образ контейнера
+        name: ui
+```
+
+> В данном случае - контроллер будет считать POD-ы с метками: app=reddit И component=ui. Поэтому важно в описании POD-а задать нужные метки (labels) P.S. Для более гибкой выборки вводим 2 метки (app и component).
+
+Запустим в Minikube ui-компоненту.
+
+``` bash
+$ kubectl apply -f kubernetes/reddit/ui-deployment.yml
+deployment.apps/ui created
+```
+
+Убедитесь, что во 2,3 и 4 столбцах стоит число 3 (число реплик ui):
+
+``` bash
+$ kubectl get deployment
+NAME   READY   UP-TO-DATE   AVAILABLE   AGE
+ui     3/3     3            3           2m3s
+```
+
+> kubectl apply -f <filename> может принимать не только отдельный файл, но и папку с ними. Например: `kubectl apply -f ./kubernetes/reddit`
+
+Пока что мы не можем использовать наше приложение полностью, потому что никак не настроена сеть для общения с ним.
+
+Но kubectl умеет пробрасывать сетевые порты POD-ов на локальную машину
+
+Найдем, используя selector, POD-ы приложения
+
+``` bash
+$ kubectl get pods --selector component=ui
+NAME                 READY   STATUS    RESTARTS   AGE
+ui-dbc8c8899-jvtgg   1/1     Running   0          12m
+ui-dbc8c8899-pcpdb   1/1     Running   0          12m
+ui-dbc8c8899-xwcj4   1/1     Running   0          12m
+```
+
+``` bash
+$ kubectl port-forward ui-dbc8c8899-jvtgg 8080:9292
+Forwarding from 127.0.0.1:8080 -> 9292
+Forwarding from [::1]:8080 -> 9292
+Handling connection for 8080
+```
+
+UI работает, подключим остальные компоненты
+
+## Comment
+
+`kubernetes/reddit/comment-deployment.yml`:
+
+``` yml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: comment
+  labels:
+    app: reddit
+    component: comment
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: reddit
+      component: comment
+  template:
+    metadata:
+      name: comment
+      labels:
+        app: reddit
+        component: comment
+    spec:
+      containers:
+      - image: chromko/comment
+        name: comment
+```
+
+> Компонент comment описывается похожим образом. Меняется только имя образа и метки и применяем (kubectl apply) \
+> Проверить можно так же, пробросив <local-port>: 9292 и зайдя на адрес http://localhost:<local-port>/healthcheck
+
+``` bash
+$ kubectl apply -f kubernetes/reddit/comment-deployment.yml
+deployment.apps/comment created
+$ kubectl get deployment
+NAME      READY   UP-TO-DATE   AVAILABLE   AGE
+comment   0/3     3            0           7s
+ui        3/3     3            3           20m
+$ kubectl get deployment
+NAME      READY   UP-TO-DATE   AVAILABLE   AGE
+comment   3/3     3            3           44s
+ui        3/3     3            3           21m
+$ kubectl get pods --selector component=comment
+comment-8bc665f87-2rpsh   1/1     Running   0          4m35s
+comment-8bc665f87-h9dvf   1/1     Running   0          4m35s
+comment-8bc665f87-wq4lm   1/1     Running   0          4m35s
+$ kubectl port-forward comment-8bc665f87-2rpsh 8080:9292
+Forwarding from 127.0.0.1:8080 -> 9292
+Forwarding from [::1]:8080 -> 9292
+Handling connection for 8080
+```
+
+``` json
+{"status":0,"dependent_services":{"commentdb":0},"version":"0.0.3"}
+```
+
+## Post
+
+`kubernetes/reddit/post-deployment.yml`:
+
+``` yml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: post
+  labels:
+    app: reddit
+    component: post
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: reddit
+      component: post
+  template:
+    metadata:
+      name: post
+      labels:
+        app: reddit
+        component: post
+    spec:
+      containers:
+      - image: windemiatrix/post
+        name: post
+...
+```
+
+``` bash
+$ kubectl apply -f kubernetes/reddit/post-deployment.yml
+deployment.apps/post created
+$ kubectl get deployment
+kubectl get deployment
+NAME      READY   UP-TO-DATE   AVAILABLE   AGE
+comment   3/3     3            3           11m
+post      3/3     3            3           44s
+ui        3/3     3            3           31m
+$ kubectl get pods --selector component=post
+NAME                    READY   STATUS    RESTARTS   AGE
+post-5b664c89d9-47xth   1/1     Running   0          76s
+post-5b664c89d9-h5277   1/1     Running   0          76s
+post-5b664c89d9-p6fq8   1/1     Running   0          76s
+$ kubectl port-forward post-5b664c89d9-47xth 8080:5000
+Forwarding from 127.0.0.1:8080 -> 5000
+Forwarding from [::1]:8080 -> 5000
+Handling connection for 8080
+```
+
+``` json
+{"status": 0, "dependent_services": {"postdb": 0}, "version": "0.0.2"}
+```
+
+## MongoDB
+
+`kubernetes/reddit/mongo-deployment.yml`:
+
+``` yml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  labels:
+    app: reddit
+    component: mongo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reddit
+      component: mongo
+  template:
+    metadata:
+      name: mongo
+      labels:
+        app: reddit
+        component: mongo
+    spec:
+      containers:
+      - image: mongo:3.2
+        name: mongo
+```
+
+Также примонтируем стандартный Volume для хранения данных вне контейнера:
+
+``` yml
+...
+    spec:
+      containers:
+      - image: mongo:3.2
+        name: mongo
+      volumes:
+      - name: mongo-persistent-storage
+        emptyDir: {}
+```
+
+``` bash
+$ kubectl apply -f kubernetes/reddit/                   
+deployment.apps/comment unchanged
+deployment.apps/mongo created
+deployment.apps/post unchanged
+deployment.apps/ui unchanged
+```
+
+## Services
+
+В текущем состоянии приложение не будет работать, так его компоненты ещё не знают как найти друг друга.
+
+Для связи компонент между собой и с внешним миром используется объект Service - абстракция, которая определяет набор POD-ов (Endpoints) и способ доступа к ним.
+
+Для связи ui с post и comment нужно создать им по объекту Service.
+
+`kubernetes/reddit/comment-service.yml`:
+
+``` yml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: comment
+  labels:
+    app: reddit
+    component: comment
+spec:
+  ports:
+  - port: 9292
+    protocol: TCP
+    targetPort: 9292
+  selector:
+    app: reddit
+    component: comment
+```
+
+Когда объект service будет создан:
+
+1. В DNS появится запись для comment.
+2. При обращении на адрес post:9292 изнутри любого из POD-ов текущего namespace нас переправит на 9292-ный порт одного из POD-ов приложения post, выбранных по label-ам.
+
+``` bash
+$ kubectl apply -f kubernetes/reddit/              
+deployment.apps/comment unchanged
+service/comment created
+deployment.apps/mongo unchanged
+deployment.apps/post unchanged
+deployment.apps/ui unchanged
+```
+
+По label-ам должны были быть найдены соответствующие POD-ы. Посмотреть можно с помощью:
+
+``` bash
+$ kubectl describe service comment | grep Endpoints
+Endpoints:         172.17.0.7:9292,172.17.0.8:9292,172.17.0.9:9292
+```
+
+А изнутри любого POD-а должно разрешаться:
+
+``` bash
+$ kubectl exec -ti post-5b664c89d9-47xth nslookup comment
+kubectl exec -ti post-5b664c89d9-47xth nslookup comment
+kubectl exec [POD] [COMMAND] is DEPRECATED and will be removed in a future version. Use kubectl exec [POD] -- [COMMAND] instead.
+nslookup: can't resolve '(null)': Name does not resolve
+
+Name:      comment
+Address 1: 10.106.225.115 comment.default.svc.cluster.local
+```
+
+`kubernetes/reddit/post-service.yml`:
+
+``` yml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: post
+  labels:
+    app: reddit
+    component: post
+spec:
+  ports:
+  - port: 5000
+    protocol: TCP
+    targetPort: 5000
+  selector:
+    app: reddit
+    component: post
+```
+
+`kubernetes/reddit/mongo-service.yml`:
+
+``` yml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  labels:
+    app: reddit
+    component: mongo
+spec:
+  ports:
+  - port: 27017
+    protocol: TCP
+    targetPort: 27017
+  selector:
+    app: reddit
+    component: mongo
+```
+
+Деплоим:
+
+``` bash
+$ kubectl apply -f kubernetes/reddit/ 
+deployment.apps/comment unchanged
+service/comment unchanged
+deployment.apps/mongo unchanged
+service/mongodb created
+deployment.apps/post unchanged
+service/post created
+deployment.apps/ui unchanged
+```
+
+Проверяем: пробрасываем порт на ui pod
+
+``` bash
+kubectl port-forward ui-dbc8c8899-jvtgg 9292:9292
+```
+
+Заходим на http://localhost:9292. Видим ошибку, что-то не работает. Пробуем перейти на сервис UI и посмотреть логи:
+
+``` bash
+$ kubectl logs ui-665dfc97d6-9hc4t
+Puma starting in single mode...
+* Version 3.12.0 (ruby 2.3.1-p112), codename: Llamas in Pajamas
+* Min threads: 0, max threads: 16
+* Environment: development
+WARNING: If you plan to load any of ActiveSupport's core extensions to Hash, be
+sure to do so *before* loading Sinatra::Application or Sinatra::Base. If not,
+you may disregard this warning.
+/app/ui_app.rb:35: warning: class variable access from toplevel
+/app/ui_app.rb:36: warning: class variable access from toplevel
+* Listening on tcp://0.0.0.0:9292
+Use Ctrl-C to stop
+E, [2021-03-25T16:38:23.044090 #1] ERROR -- : service=ui | event=show_all_posts | request_id=ad8968ef-9b17-49e1-b987-f58ca64eb21b | message='Failed to read from Post service. Reason: 784: unexpected token at 'Internal Server Error'' | params: "{}"
+I, [2021-03-25T16:38:23.066399 #1]  INFO -- : service=ui | event=request | path=/ | request_id=ad8968ef-9b17-49e1-b987-f58ca64eb21b | remote_addr=127.0.0.1 | method= GET | response_status=200
+I, [2021-03-25T16:38:23.450596 #1]  INFO -- : service=ui | event=request | path=/favicon.ico | request_id=4472c87b-a33d-4669-831a-aa753a47ef63 | remote_addr=127.0.0.1 | method= GET | response_status=404
+```
+
+А также зайдем на Post сервис и посмотрим, что происходит там:
+
+``` bash
+kubectl logs post-6896b54856-9z599
+{"addr": "172.17.0.1", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-25 16:36:48"}
+{"addr": "172.17.0.1", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-25 16:36:53"}
+{"addr": "172.17.0.1", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-25 16:36:58"}
+{"addr": "172.17.0.1", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-25 16:37:13"}
+{"addr": "172.17.0.1", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-25 16:37:28"}
+{"addr": "172.17.0.1", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-25 16:37:33"}
+{"addr": "172.17.0.1", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-25 16:37:35"}
+{"addr": "172.17.0.1", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-25 16:37:37"}
+{"event": "find_all_posts", "level": "info", "message": "Successfully retrieved all posts from the database", "params": {}, "request_id": "ad8968ef-9b17-49e1-b987-f58ca64eb21b", "service": "post", "timestamp": "2021-03-25 16:37:52"}
+{"event": "internal_error", "level": "error", "method": "GET", "path": "/posts?", "remote_addr": "172.17.0.1", "request_id": "ad8968ef-9b17-49e1-b987-f58ca64eb21b", "service": "post", "timestamp": "2021-03-25 16:38:23", "traceback": "Traceback (most recent call last):\n  File \"/usr/local/lib/python3.6/site-packages/flask/app.py\", line 1612, in full_dispatch_request\n    rv = self.dispatch_request()\n  File \"/usr/local/lib/python3.6/site-packages/flask/app.py\", line 1598, in dispatch_request\n    return self.view_functions[rule.endpoint](**req.view_args)\n  File \"/app/post_app.py\", line 133, in posts\n    posts = find_posts()\n  File \"/usr/local/lib/python3.6/site-packages/py_zipkin/zipkin.py\", line 246, in decorated\n    return f(*args, **kwargs)\n  File \"/app/post_app.py\", line 120, in find_posts\n    return dumps(posts)\n  File \"/usr/local/lib/python3.6/site-packages/bson/json_util.py\", line 403, in dumps\n    return json.dumps(_json_convert(obj, json_options), *args, **kwargs)\n  File \"/usr/local/lib/python3.6/site-packages/bson/json_util.py\", line 444, in _json_convert\n    return list((_json_convert(v, json_options) for v in obj))\n  File \"/usr/local/lib/python3.6/site-packages/bson/json_util.py\", line 444, in <genexpr>\n    return list((_json_convert(v, json_options) for v in obj))\n  File \"/usr/local/lib/python3.6/site-packages/pymongo/cursor.py\", line 1132, in next\n    if len(self.__data) or self._refresh():\n  File \"/usr/local/lib/python3.6/site-packages/pymongo/cursor.py\", line 1055, in _refresh\n    self.__collation))\n  File \"/usr/local/lib/python3.6/site-packages/pymongo/cursor.py\", line 892, in __send_message\n    **kwargs)\n  File \"/usr/local/lib/python3.6/site-packages/pymongo/mongo_client.py\", line 933, in _send_message_with_response\n    server = topology.select_server(selector)\n  File \"/usr/local/lib/python3.6/site-packages/pymongo/topology.py\", line 214, in select_server\n    address))\n  File \"/usr/local/lib/python3.6/site-packages/pymongo/topology.py\", line 189, in select_servers\n    self._error_message(selector))\npymongo.errors.ServerSelectionTimeoutError: post_db:27017: [Errno -3] Try again\n"}
+{"addr": "172.17.0.1", "event": "request", "level": "info", "method": "GET", "path": "/posts?", "request_id": "ad8968ef-9b17-49e1-b987-f58ca64eb21b", "response_status": 500, "service": "post", "timestamp": "2021-03-25 16:38:23"}
+{"addr": "172.17.0.1", "event": "request", "level": "info", "method": "GET", "path": "/healthcheck?", "request_id": null, "response_status": 200, "service": "post", "timestamp": "2021-03-25 16:38:25"}
+```
+
+Ничего не работает и не понятно, почему. Листаем методичку. Судя по ней, приложение должно искать другие адреса. Допустим, у нас эта же проблема не смотря на то, что по логам мы получаем все сообщения, но что-то не можем обработать.
+
+Сделаем Service для БД comment `kubernetes/reddit/comment-mongodb-service.yml`:
+
+``` yml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: comment-db # В имени нельзя использовать “_”
+  labels:
+    app: reddit
+    component: mongo
+    comment-db: "true" # добавим метку, чтобы различать сервисы
+spec:
+  ports:
+  - port: 27017
+    protocol: TCP
+    targetPort: 27017
+  selector:
+    app: reddit
+    component: mongo
+    comment-db: "true" # Отдельный лейбл для comment-db
+```
+
+Так же придется обновить файл deployment для mongodb, чтобы новый Service смог найти нужный POD `kubernetes/reddit/mongo-deployment.yml`:
+
+``` yml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  labels:
+    app: reddit
+    component: mongo
+    comment-db: "true" # Лейбл в deployment чтобы было понятно, что развернуто
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reddit
+      component: mongo
+  template:
+    metadata:
+      name: mongo
+      labels:
+        app: reddit
+        component: mongo
+        comment-db: "true" # label в pod, который нужно найти
+    spec:
+      containers:
+      - image: mongo:3.2
+        name: mongo
+        volumeMounts:
+        - name: mongo-persistent-storage
+          mountPath: /data/db
+      volumes:
+      - name: mongo-persistent-storage
+        emptyDir: {}
+```
+
+Зададим pod-ам comment переменную окружения для обращения к базе:
+
+`kubernetes/reddit/comment-deployment.yml`:
+
+``` yml
+    spec:
+      containers:
+      - image: windemiatrix/comment:1.0
+        name: comment
+        env:
+        - name: COMMENT_DATABASE_HOST
+          value: comment-db
+```
+
+Мы сделали базу доступной для comment.
+
+Проделайте аналогичные же действия для postсервиса. Название сервиса должно post-db.
+
+После этого снова сделайте port-forwarding на UI и убедитесь, что приложение запустилось без ошибок и посты создаются
+
+`kubernetes/reddit/post-mongodb-service.yml`:
+
+``` yml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: post-db
+  labels:
+    app: reddit
+    component: mongo
+    comment-db: "true"
+spec:
+  ports:
+  - port: 27017
+    protocol: TCP
+    targetPort: 27017
+  selector:
+    app: reddit
+    component: mongo
+    comment-db: "true"
+```
+
+`kubernetes/reddit/post-deployment.yml`:
+
+``` yml
+    spec:
+      containers:
+      - image: windemiatrix/post:1.0
+        name: post
+        env:
+        - name: POST_DATABASE_HOST
+          value: post-db
+```
+
+``` bash
+$ kubectl apply -f kubernetes/reddit/ 
+deployment.apps/comment configured
+service/comment-db created
+service/comment unchanged
+deployment.apps/mongo configured
+service/mongodb unchanged
+deployment.apps/post configured
+service/post unchanged
+deployment.apps/ui unchanged
+```
+
+``` bash
+$ kubectl get pods
+NAME                       READY   STATUS    RESTARTS   AGE
+comment-7f8fdb675d-224d6   1/1     Running   0          18s
+comment-7f8fdb675d-d6qbp   1/1     Running   0          18s
+comment-7f8fdb675d-hn8vr   1/1     Running   0          18m
+mongo-7cc44965cd-vv667     1/1     Running   0          37m
+post-5ccd8c8598-lfsch      1/1     Running   0          2m41s
+post-5ccd8c8598-rp6vk      1/1     Running   0          18s
+post-5ccd8c8598-zfclc      1/1     Running   0          18s
+ui-665dfc97d6-9hc4t        1/1     Running   1          4d8h
+ui-665dfc97d6-bv5nx        1/1     Running   1          4d8h
+ui-665dfc97d6-djsdj        1/1     Running   1          4d8h
+$ kubectl port-forward ui-665dfc97d6-9hc4t 9292:9292
+Forwarding from 127.0.0.1:9292 -> 9292
+Forwarding from [::1]:9292 -> 9292
+Handling connection for 9292
+```
+
+Теперь работает.
+
+Удалим объект mongodb-service:
+
+``` bash
+kubectl delete -f kubernetes/reddit/mongo-service.yml 
+```
+
+Нам нужно как-то обеспечить доступ к ui-сервису снаружи. Для этого нам понадобится Service для UI-компоненты:
+
+`kubernetes/reddit/ui-service.yml`:
+
+``` yml
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ui
+  labels:
+    app: reddit
+    component: ui
+spec:
+  type: NodePort
+  ports:  
+    - port: 9292
+      protocol: TCP
+      targetPort: 9292
+  selector:
+    app: reddit
+    component: ui
+```
+
+По-умолчанию все сервисы имеют тип ClusterIP - это значит, что сервис распологается на внутреннем диапазоне IP-адресов кластера. Снаружи до него нет доступа.
+
+Тип NodePort - на каждой ноде кластера открывает порт из диапазона 30000-32767 и переправляет трафик с этого порта на тот, который указан в targetPort Pod (похоже на стандартный expose в docker)
+
+Теперь до сервиса можно дойти по <Node-IP>:<NodePort>. Также можно указать самим NodePort (но все равно из диапазона):
+
+``` yml
+spec:
+  type: NodePort
+  ports:
+  - nodePort: 32092
+    port: 9292
+    protocol: TCP
+    targetPort: 9292
+  selector:
+...
+```
+
+Т.е. в описании service NodePort - для доступа снаружи кластера port - для доступа к сервису изнутри кластера.
+
+``` bash
+$ minikube service ui
+|-----------|------|-------------|---------------------------|
+| NAMESPACE | NAME | TARGET PORT |            URL            |
+|-----------|------|-------------|---------------------------|
+| default   | ui   |        9292 | http://192.168.49.2:31311 |
+|-----------|------|-------------|---------------------------|
+🎉  Opening service default/ui in default browser...
+```
+
+## Minikube
+
+Minikube может перенаправлять на web-странцы с сервисами которые были помечены типом NodePort. Посмотрите на список сервисов:
+
+``` bash
+$ minikube service list  
+|-------------|------------|--------------|---------------------------|
+|  NAMESPACE  |    NAME    | TARGET PORT  |            URL            |
+|-------------|------------|--------------|---------------------------|
+| default     | comment    | No node port |
+| default     | comment-db | No node port |
+| default     | kubernetes | No node port |
+| default     | mongodb    | No node port |
+| default     | post       | No node port |
+| default     | post-db    | No node port |
+| default     | ui         |         9292 | http://192.168.49.2:31311 |
+| kube-system | kube-dns   | No node port |
+|-------------|------------|--------------|---------------------------|
+```
+
+Minikube также имеет в комплекте несколько стандартных аддонов (расширений) для Kubernetes (kube-dns, dashboard, monitoring,…). Каждое расширение - это такие же PODы и сервисы, какие создавались нами, только они еще общаются с API самого Kubernetes.
+
+Получить список расширений:
+
+``` bash
+$ minikube addons list
+|-----------------------------|----------|--------------|
+|         ADDON NAME          | PROFILE  |    STATUS    |
+|-----------------------------|----------|--------------|
+| ambassador                  | minikube | disabled     |
+| auto-pause                  | minikube | disabled     |
+| csi-hostpath-driver         | minikube | disabled     |
+| dashboard                   | minikube | disabled     |
+| default-storageclass        | minikube | enabled ✅   |
+| efk                         | minikube | disabled     |
+| freshpod                    | minikube | disabled     |
+| gcp-auth                    | minikube | disabled     |
+| gvisor                      | minikube | disabled     |
+| helm-tiller                 | minikube | disabled     |
+| ingress                     | minikube | disabled     |
+| ingress-dns                 | minikube | disabled     |
+| istio                       | minikube | disabled     |
+| istio-provisioner           | minikube | disabled     |
+| kubevirt                    | minikube | disabled     |
+| logviewer                   | minikube | disabled     |
+| metallb                     | minikube | disabled     |
+| metrics-server              | minikube | disabled     |
+| nvidia-driver-installer     | minikube | disabled     |
+| nvidia-gpu-device-plugin    | minikube | disabled     |
+| olm                         | minikube | disabled     |
+| pod-security-policy         | minikube | disabled     |
+| registry                    | minikube | disabled     |
+| registry-aliases            | minikube | disabled     |
+| registry-creds              | minikube | disabled     |
+| storage-provisioner         | minikube | enabled ✅   |
+| storage-provisioner-gluster | minikube | disabled     |
+| volumesnapshots             | minikube | disabled     |
+|-----------------------------|----------|--------------|
+```
+
+Интересный аддон - dashboard. Это UI для работы с kubernetes. По умолчанию в новых версиях он включен. Как и многие kubernetes add-on'ы, dashboard запускается в виде pod'а.
+
+Если мы посмотрим на запущенные pod'ы с помощью команды kubectl get pods, то обнаружим только наше приложение.
+
+Потому что поды и сервисы для dashboard-а были запущены в namespace (пространстве имен) kube-system. Мы же запросили пространство имен default.
+
+Namespace - это, по сути, виртуальный кластер Kubernetes внутри самого Kubernetes. Внутри каждого такого кластера находятся свои объекты (POD-ы, Service-ы, Deployment-ы и т.д.), кроме объектов, общих на все namespace-ы (nodes, ClusterRoles, PersistentVolumes)
+
+В разных namespace-ах могут находится объекты с одинаковым именем, но в рамках одного namespace имена объектов должны быть уникальны.
+
+При старте Kubernetes кластер уже имеет 3 namespace:
+
+* default - для объектов для которых не определен другой Namespace (в нем мы работали все это время)
+* kube-system - для объектов созданных Kubernetes’ом и для управления им
+* kube-public - для объектов к которым нужен доступ из любой точки кластера
+
+Для того, чтобы выбрать конкретное пространство имен, нужно указать флаг -n <namespace> или --namespace <namespace> при запуске kubectl.
+
+Подсмотрел, как запустить dashboard:
+
+``` bash
+minikube dashboard
+```
+
+Найдем же объекты нашего dashboard
+
+``` bash
+$ kubectl get all -n kube-system --selector k8s-app=kubernetes-dashboard
+No resources found in kube-system namespace.
+```
+
+Oops =(
+
+В самом Dashboard можно:
+
+* отслеживать состояние кластера и рабочих нагрузок в нем
+* создавать новые объекты (загружать YAML-файлы)
+* Удалять и изменять объекты (кол-во реплик, yaml-файлы)
+* отслеживать логи в Pod-ах
+* при включении Heapster-аддона смотреть нагрузку на Podах
+* и т.д.
+
+Ознакомьтесь, покликайте - в minikube не страшно ничего сломать (если что заново поднять).
+
+Используем же namespace в наших целях. Отделим среду для разработки приложения от всего остального кластера. Для этого создадим свой Namespace dev.
+
+`kubernetes/reddit/dev-namespace.yml`:
+
+``` yml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+```
+
+``` bash
+kubectl apply -f kubernetes/reddit/ 
+```
+
+Запустим приложение в dev неймспейсе:
+
+``` bash
+$ kubectl apply -n dev -f kubernetes/reddit/ 
+namespace/dev created
+deployment.apps/mongo created
+service/mongodb created
+deployment.apps/post created
+service/post-db created
+service/post created
+deployment.apps/ui created
+service/ui created
+Error from server (NotFound): error when creating "kubernetes/reddit/comment-deployment.yml": namespaces "dev" not found
+Error from server (NotFound): error when creating "kubernetes/reddit/comment-mongodb-service.yml": namespaces "dev" not found
+Error from server (NotFound): error when creating "kubernetes/reddit/comment-service.yml": namespaces "dev" not found
+```
+
+Если возник конфликт портов у ui-service, то убираем из описания значение NodePort
+
+Смотрим результат:
+
+``` bash
+minikube service ui -n dev
+```
+
+Работает =)
+
+Давайте добавим инфу об окружении внутрь контейнера UI
+
+`kubernetes/reddit/ui-deployment.yml`:
+
+``` yml
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ui
+  labels:
+    app: reddit
+    component: ui
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: reddit
+      component: ui
+  template:
+    metadata:
+      name: ui-pod
+      labels:
+        app: reddit
+        component: ui
+    spec:
+      containers:
+      - image: windemiatrix/ui:1.0
+        name: ui
+        env:
+        - name: ENV
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace        
+```
+
+``` bash
+$ kubectl apply -n dev -f kubernetes/reddit/ 
+deployment.apps/comment created
+service/comment-db created
+service/comment created
+namespace/dev unchanged
+deployment.apps/mongo unchanged
+service/mongodb unchanged
+deployment.apps/post unchanged
+service/post-db unchanged
+service/post unchanged
+deployment.apps/ui configured
+service/ui unchanged
+```
+
+Теперь запускается без ошибок: Microservices Reddit in **dev** ui-6cd68fcfd6-785pf container
+
+## Разворачиваем Kubernetes
+
+Мы подготовили наше приложение в локальном окружении. Теперь самое время запустить его на реальном кластере Kubernetes.
+
+В качестве основной платформы будем использовать Elastic Kubernetes Service (Amazon EKS) в AWS.
+
+Продолжить со страницы 61.
