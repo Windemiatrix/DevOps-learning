@@ -3488,7 +3488,7 @@ docker-compose -f docker-compose-monitoring.yml up -d
 cd ../
 ```
 
-cAdvisor имеет UI, в котором отображается собираемая о контейнерах информация.
+cAdvisor имеет UI, в котором отобр��жается собираемая о контейнерах информация.
 
 Откроем страницу Web UI по адресу http://35.195.157.109:8080
 
@@ -5626,10 +5626,10 @@ spec:
 ``` bash
 $ minikube service ui
 |-----------|------|-------------|---------------------------|
-| NAMESPACE | NAME | TARGET PORT |            URL            |
-|-----------|------|-------------|---------------------------|
-| default   | ui   |        9292 | http://192.168.49.2:31311 |
-|-----------|------|-------------|---------------------------|
+| NAMESPACE   | NAME   | TARGET PORT   | URL                         |
+| ----------- | ------ | ------------- | --------------------------- |
+| default     | ui     | 9292          | http://192.168.49.2:31311   |
+| ----------- | ------ | ------------- | --------------------------- |
 🎉  Opening service default/ui in default browser...
 ```
 
@@ -5640,17 +5640,17 @@ Minikube может перенаправлять на web-странцы с се
 ``` bash
 $ minikube service list  
 |-------------|------------|--------------|---------------------------|
-|  NAMESPACE  |    NAME    | TARGET PORT  |            URL            |
-|-------------|------------|--------------|---------------------------|
-| default     | comment    | No node port |
-| default     | comment-db | No node port |
-| default     | kubernetes | No node port |
-| default     | mongodb    | No node port |
-| default     | post       | No node port |
-| default     | post-db    | No node port |
-| default     | ui         |         9292 | http://192.168.49.2:31311 |
-| kube-system | kube-dns   | No node port |
-|-------------|------------|--------------|---------------------------|
+| NAMESPACE     | NAME         | TARGET PORT    | URL                         |
+| ------------- | ------------ | -------------- | --------------------------- |
+| default       | comment      | No node port   |
+| default       | comment-db   | No node port   |
+| default       | kubernetes   | No node port   |
+| default       | mongodb      | No node port   |
+| default       | post         | No node port   |
+| default       | post-db      | No node port   |
+| default       | ui           | 9292           | http://192.168.49.2:31311   |
+| kube-system   | kube-dns     | No node port   |
+| ------------- | ------------ | -------------- | --------------------------- |
 ```
 
 Minikube также имеет в комплекте несколько стандартных аддонов (расширений) для Kubernetes (kube-dns, dashboard, monitoring,…). Каждое расширение - это такие же PODы и сервисы, какие создавались нами, только они еще общаются с API самого Kubernetes.
@@ -5660,37 +5660,37 @@ Minikube также имеет в комплекте несколько стан
 ``` bash
 $ minikube addons list
 |-----------------------------|----------|--------------|
-|         ADDON NAME          | PROFILE  |    STATUS    |
-|-----------------------------|----------|--------------|
-| ambassador                  | minikube | disabled     |
-| auto-pause                  | minikube | disabled     |
-| csi-hostpath-driver         | minikube | disabled     |
-| dashboard                   | minikube | disabled     |
-| default-storageclass        | minikube | enabled ✅   |
-| efk                         | minikube | disabled     |
-| freshpod                    | minikube | disabled     |
-| gcp-auth                    | minikube | disabled     |
-| gvisor                      | minikube | disabled     |
-| helm-tiller                 | minikube | disabled     |
-| ingress                     | minikube | disabled     |
-| ingress-dns                 | minikube | disabled     |
-| istio                       | minikube | disabled     |
-| istio-provisioner           | minikube | disabled     |
-| kubevirt                    | minikube | disabled     |
-| logviewer                   | minikube | disabled     |
-| metallb                     | minikube | disabled     |
-| metrics-server              | minikube | disabled     |
-| nvidia-driver-installer     | minikube | disabled     |
-| nvidia-gpu-device-plugin    | minikube | disabled     |
-| olm                         | minikube | disabled     |
-| pod-security-policy         | minikube | disabled     |
-| registry                    | minikube | disabled     |
-| registry-aliases            | minikube | disabled     |
-| registry-creds              | minikube | disabled     |
-| storage-provisioner         | minikube | enabled ✅   |
-| storage-provisioner-gluster | minikube | disabled     |
-| volumesnapshots             | minikube | disabled     |
-|-----------------------------|----------|--------------|
+| ADDON NAME                    | PROFILE    | STATUS         |
+| ----------------------------- | ---------- | -------------- |
+| ambassador                    | minikube   | disabled       |
+| auto-pause                    | minikube   | disabled       |
+| csi-hostpath-driver           | minikube   | disabled       |
+| dashboard                     | minikube   | disabled       |
+| default-storageclass          | minikube   | enabled ✅      |
+| efk                           | minikube   | disabled       |
+| freshpod                      | minikube   | disabled       |
+| gcp-auth                      | minikube   | disabled       |
+| gvisor                        | minikube   | disabled       |
+| helm-tiller                   | minikube   | disabled       |
+| ingress                       | minikube   | disabled       |
+| ingress-dns                   | minikube   | disabled       |
+| istio                         | minikube   | disabled       |
+| istio-provisioner             | minikube   | disabled       |
+| kubevirt                      | minikube   | disabled       |
+| logviewer                     | minikube   | disabled       |
+| metallb                       | minikube   | disabled       |
+| metrics-server                | minikube   | disabled       |
+| nvidia-driver-installer       | minikube   | disabled       |
+| nvidia-gpu-device-plugin      | minikube   | disabled       |
+| olm                           | minikube   | disabled       |
+| pod-security-policy           | minikube   | disabled       |
+| registry                      | minikube   | disabled       |
+| registry-aliases              | minikube   | disabled       |
+| registry-creds                | minikube   | disabled       |
+| storage-provisioner           | minikube   | enabled ✅      |
+| storage-provisioner-gluster   | minikube   | disabled       |
+| volumesnapshots               | minikube   | disabled       |
+| ----------------------------- | ---------- | -------------- |
 ```
 
 Интересный аддон - dashboard. Это UI для работы с kubernetes. По умолчанию в новых версиях он включен. Как и многие kubernetes add-on'ы, dashboard запускается в виде pod'а.
@@ -5835,8 +5835,4 @@ service/ui unchanged
 
 ## Разворачиваем Kubernetes
 
-Мы подготовили наше приложение в локальном окружении. Теперь самое время запустить его на реальном кластере Kubernetes.
-
-В качестве основной платформы будем использовать Elastic Kubernetes Service (Amazon EKS) в AWS.
-
-Продолжить со страницы 61.
+Развертывание кластера подробно описано [тут](https://learn.hashicorp.com/tutorials/terraform/eks).
